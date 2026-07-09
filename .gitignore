@@ -44,6 +44,11 @@ lambda/_patch_*.py
 # Publication zip — lives in repo root but must not be committed or re-zipped
 ADR-HealthLake-repo.zip
 
+# Local review files — temporary, not for publication
+architecture-preview.html
+architecture-preview.mmd
+architecture-preview-mermaid.png
+
 # Internal override justifications — not for public repo
 OVERRIDE_JUSTIFICATIONS.md
 LINK_AUDIT.md

@@ -1,0 +1,127 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="1438" viewBox="0 0 1000 1438">
+<rect width="1000" height="1438" fill="#1e1e1e"/>
+<rect x="38" y="30" width="239" height="696" rx="10" fill="#2a2a2a" stroke="#666666" stroke-width="1.5"/>
+<text x="157.5" y="48" text-anchor="middle" font-family="Arial,sans-serif" font-size="12" font-weight="bold" fill="#f0f0f0">Health Insurer</text>
+<text x="157.5" y="64" text-anchor="middle" font-family="Arial,sans-serif" font-size="12" font-weight="bold" fill="#f0f0f0">Clinical Data Pipeline</text>
+<text x="157.5" y="80" text-anchor="middle" font-family="Arial,sans-serif" font-size="12" font-weight="bold" fill="#f0f0f0">(AWS HealthLake repo)</text>
+<rect x="50" y="140" width="215" height="70" rx="6" fill="#333333" stroke="#888888" stroke-width="1.5" />
+<text x="157.5" y="157.24" text-anchor="middle" dominant-baseline="middle" font-family="Arial,sans-serif" font-size="12" font-weight="bold" fill="#f0f0f0">[1] Synthetic Clinical Data</text>
+<text x="157.5" y="175.0" text-anchor="middle" dominant-baseline="middle" font-family="Arial,sans-serif" font-size="12" font-weight="normal" fill="#bbbbbb">Generation</text>
+<text x="157.5" y="192.76" text-anchor="middle" dominant-baseline="middle" font-family="Arial,sans-serif" font-size="12" font-weight="normal" fill="#bbbbbb">Synthea FHIR R4</text>
+<rect x="50" y="240" width="215" height="70" rx="6" fill="#333333" stroke="#888888" stroke-width="1.5" />
+<text x="157.5" y="257.24" text-anchor="middle" dominant-baseline="middle" font-family="Arial,sans-serif" font-size="12" font-weight="bold" fill="#f0f0f0">[2] FHIR Data Ingestion</text>
+<text x="157.5" y="275.0" text-anchor="middle" dominant-baseline="middle" font-family="Arial,sans-serif" font-size="12" font-weight="normal" fill="#bbbbbb">AWS HealthLake</text>
+<text x="157.5" y="292.76" text-anchor="middle" dominant-baseline="middle" font-family="Arial,sans-serif" font-size="12" font-weight="normal" fill="#bbbbbb">ICD-10-CM · RxNorm · LOINC</text>
+<rect x="50" y="340" width="215" height="70" rx="6" fill="#333333" stroke="#888888" stroke-width="1.5" />
+<text x="157.5" y="357.24" text-anchor="middle" dominant-baseline="middle" font-family="Arial,sans-serif" font-size="12" font-weight="bold" fill="#f0f0f0">[3] Feature Engineering</text>
+<text x="157.5" y="375.0" text-anchor="middle" dominant-baseline="middle" font-family="Arial,sans-serif" font-size="12" font-weight="normal" fill="#bbbbbb">Apache Iceberg + Amazon Athena SQL</text>
+<text x="157.5" y="392.76" text-anchor="middle" dominant-baseline="middle" font-family="Arial,sans-serif" font-size="12" font-weight="normal" fill="#bbbbbb">Patient-level ADR features</text>
+<rect x="50" y="440" width="215" height="70" rx="6" fill="#252530" stroke="#666666" stroke-width="1.5" stroke-dasharray="6 4"/>
+<text x="157.5" y="457.24" text-anchor="middle" dominant-baseline="middle" font-family="Arial,sans-serif" font-size="12" font-weight="bold" fill="#999999">[4] De-identification</text>
+<text x="157.5" y="475.0" text-anchor="middle" dominant-baseline="middle" font-family="Arial,sans-serif" font-size="12" font-weight="normal" fill="#bbbbbb">Amazon Comprehend Medical</text>
+<text x="157.5" y="492.76" text-anchor="middle" dominant-baseline="middle" font-family="Arial,sans-serif" font-size="12" font-weight="normal" fill="#bbbbbb">(skipped — synthetic data)</text>
+<rect x="50" y="540" width="215" height="70" rx="6" fill="#333333" stroke="#888888" stroke-width="1.5" />
+<text x="157.5" y="566.12" text-anchor="middle" dominant-baseline="middle" font-family="Arial,sans-serif" font-size="12" font-weight="bold" fill="#f0f0f0">[6] Amazon S3</text>
+<text x="157.5" y="583.88" text-anchor="middle" dominant-baseline="middle" font-family="Arial,sans-serif" font-size="12" font-weight="normal" fill="#bbbbbb">Clinical Feature Table</text>
+<rect x="50" y="640" width="215" height="70" rx="6" fill="#333333" stroke="#888888" stroke-width="1.5" />
+<text x="157.5" y="666.12" text-anchor="middle" dominant-baseline="middle" font-family="Arial,sans-serif" font-size="12" font-weight="bold" fill="#f0f0f0">[7] AWS Glue Data Catalog</text>
+<text x="157.5" y="683.88" text-anchor="middle" dominant-baseline="middle" font-family="Arial,sans-serif" font-size="12" font-weight="normal" fill="#bbbbbb">healthcare_features</text>
+<defs><marker id="m42515" markerWidth="8" markerHeight="6" refX="7.5" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#aaaaaa"/></marker></defs>
+<line x1="157" y1="210" x2="157" y2="240" stroke="#aaaaaa" stroke-width="1.5"  marker-end="url(#m42515)"/>
+<defs><marker id="m98675" markerWidth="8" markerHeight="6" refX="7.5" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#aaaaaa"/></marker></defs>
+<line x1="157" y1="310" x2="157" y2="340" stroke="#aaaaaa" stroke-width="1.5"  marker-end="url(#m98675)"/>
+<defs><marker id="m57188" markerWidth="8" markerHeight="6" refX="7.5" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#aaaaaa"/></marker></defs>
+<line x1="157" y1="410" x2="157" y2="440" stroke="#aaaaaa" stroke-width="1.5"  marker-end="url(#m57188)"/>
+<defs><marker id="m37195" markerWidth="8" markerHeight="6" refX="7.5" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#aaaaaa"/></marker></defs>
+<line x1="157" y1="610" x2="157" y2="640" stroke="#aaaaaa" stroke-width="1.5"  marker-end="url(#m37195)"/>
+<rect x="295" y="440" width="258" height="70" rx="6" fill="#333333" stroke="#888888" stroke-width="1.5" />
+<text x="424.0" y="457.24" text-anchor="middle" dominant-baseline="middle" font-family="Arial,sans-serif" font-size="12" font-weight="bold" fill="#f0f0f0">[5] Privacy-Preserving Record Linkage</text>
+<text x="424.0" y="475.0" text-anchor="middle" dominant-baseline="middle" font-family="Arial,sans-serif" font-size="12" font-weight="normal" fill="#bbbbbb">shared HMAC-SHA256</text>
+<text x="424.0" y="492.76" text-anchor="middle" dominant-baseline="middle" font-family="Arial,sans-serif" font-size="12" font-weight="normal" fill="#bbbbbb">demographics → patient_id</text>
+<rect x="571" y="30" width="239" height="696" rx="10" fill="#2a2a2a" stroke="#666666" stroke-width="1.5"/>
+<text x="690.5" y="48" text-anchor="middle" font-family="Arial,sans-serif" font-size="12" font-weight="bold" fill="#f0f0f0">Pharma Company</text>
+<text x="690.5" y="64" text-anchor="middle" font-family="Arial,sans-serif" font-size="12" font-weight="bold" fill="#f0f0f0">Drug Exposure Pipeline</text>
+<text x="690.5" y="80" text-anchor="middle" font-family="Arial,sans-serif" font-size="12" font-weight="bold" fill="#f0f0f0">(AWS Clean Rooms repo)</text>
+<rect x="583" y="440" width="215" height="70" rx="6" fill="#333333" stroke="#888888" stroke-width="1.5" />
+<text x="690.5" y="457.24" text-anchor="middle" dominant-baseline="middle" font-family="Arial,sans-serif" font-size="12" font-weight="bold" fill="#f0f0f0">[8] Drug Exposure Data Generation</text>
+<text x="690.5" y="475.0" text-anchor="middle" dominant-baseline="middle" font-family="Arial,sans-serif" font-size="12" font-weight="normal" fill="#bbbbbb">AWS Lambda</text>
+<text x="690.5" y="492.76" text-anchor="middle" dominant-baseline="middle" font-family="Arial,sans-serif" font-size="12" font-weight="normal" fill="#bbbbbb">dosage · duration · safety scores</text>
+<rect x="583" y="540" width="215" height="70" rx="6" fill="#333333" stroke="#888888" stroke-width="1.5" />
+<text x="690.5" y="566.12" text-anchor="middle" dominant-baseline="middle" font-family="Arial,sans-serif" font-size="12" font-weight="bold" fill="#f0f0f0">[10] Amazon S3</text>
+<text x="690.5" y="583.88" text-anchor="middle" dominant-baseline="middle" font-family="Arial,sans-serif" font-size="12" font-weight="normal" fill="#bbbbbb">Drug Exposure Data</text>
+<rect x="583" y="640" width="215" height="70" rx="6" fill="#333333" stroke="#888888" stroke-width="1.5" />
+<text x="690.5" y="666.12" text-anchor="middle" dominant-baseline="middle" font-family="Arial,sans-serif" font-size="12" font-weight="bold" fill="#f0f0f0">[11] AWS Glue Data Catalog</text>
+<text x="690.5" y="683.88" text-anchor="middle" dominant-baseline="middle" font-family="Arial,sans-serif" font-size="12" font-weight="normal" fill="#bbbbbb">pharma_drug_exposure</text>
+<defs><marker id="m14728" markerWidth="8" markerHeight="6" refX="7.5" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#aaaaaa"/></marker></defs>
+<line x1="690" y1="610" x2="690" y2="640" stroke="#aaaaaa" stroke-width="1.5"  marker-end="url(#m14728)"/>
+<defs><marker id="m80054" markerWidth="8" markerHeight="6" refX="7.5" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#aaaaaa"/></marker></defs>
+<path d="M295,475 C280.0,475 280.0,475 265,475" stroke="#aaaaaa" stroke-width="1.5" fill="none"  marker-end="url(#m80054)"/>
+<defs><marker id="m49425" markerWidth="8" markerHeight="6" refX="7.5" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#aaaaaa"/></marker></defs>
+<path d="M553,475 C568.0,475 568.0,475 583,475" stroke="#aaaaaa" stroke-width="1.5" fill="none"  marker-end="url(#m49425)"/>
+<defs><marker id="m5553" markerWidth="8" markerHeight="6" refX="7.5" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#aaaaaa"/></marker></defs>
+<line x1="157" y1="510" x2="157" y2="540" stroke="#aaaaaa" stroke-width="1.5"  marker-end="url(#m5553)"/>
+<defs><marker id="m81913" markerWidth="8" markerHeight="6" refX="7.5" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#aaaaaa"/></marker></defs>
+<line x1="690" y1="510" x2="690" y2="540" stroke="#aaaaaa" stroke-width="1.5"  marker-end="url(#m81913)"/>
+<rect x="30" y="756" width="680" height="416" rx="10" fill="#2a2a2a" stroke="#666666" stroke-width="1.5"/>
+<text x="370.0" y="774" text-anchor="middle" font-family="Arial,sans-serif" font-size="12" font-weight="bold" fill="#f0f0f0">AWS Clean Rooms ML Collaboration  (AWS Clean Rooms repo)</text>
+<rect x="50" y="786" width="235" height="70" rx="6" fill="#333333" stroke="#888888" stroke-width="1.5" />
+<text x="167.5" y="803.24" text-anchor="middle" dominant-baseline="middle" font-family="Arial,sans-serif" font-size="12" font-weight="bold" fill="#f0f0f0">[12] Configured Table</text>
+<text x="167.5" y="821.0" text-anchor="middle" dominant-baseline="middle" font-family="Arial,sans-serif" font-size="12" font-weight="normal" fill="#bbbbbb">Health Insurer</text>
+<text x="167.5" y="838.76" text-anchor="middle" dominant-baseline="middle" font-family="Arial,sans-serif" font-size="12" font-weight="normal" fill="#bbbbbb">healthcare_features</text>
+<rect x="330" y="786" width="235" height="70" rx="6" fill="#333333" stroke="#888888" stroke-width="1.5" />
+<text x="447.5" y="803.24" text-anchor="middle" dominant-baseline="middle" font-family="Arial,sans-serif" font-size="12" font-weight="bold" fill="#f0f0f0">[13] Configured Table</text>
+<text x="447.5" y="821.0" text-anchor="middle" dominant-baseline="middle" font-family="Arial,sans-serif" font-size="12" font-weight="normal" fill="#bbbbbb">Pharma Company</text>
+<text x="447.5" y="838.76" text-anchor="middle" dominant-baseline="middle" font-family="Arial,sans-serif" font-size="12" font-weight="normal" fill="#bbbbbb">pharma_drug_exposure</text>
+<rect x="183" y="886" width="285" height="70" rx="6" fill="#333333" stroke="#888888" stroke-width="1.5" />
+<text x="325.5" y="912.12" text-anchor="middle" dominant-baseline="middle" font-family="Arial,sans-serif" font-size="12" font-weight="bold" fill="#f0f0f0">[14] AWS Clean Rooms ML</text>
+<text x="325.5" y="929.88" text-anchor="middle" dominant-baseline="middle" font-family="Arial,sans-serif" font-size="12" font-weight="normal" fill="#bbbbbb">JOIN on patient_id (HMAC token)</text>
+<rect x="180" y="986" width="235" height="70" rx="6" fill="#333333" stroke="#888888" stroke-width="1.5" />
+<text x="297.5" y="1012.12" text-anchor="middle" dominant-baseline="middle" font-family="Arial,sans-serif" font-size="12" font-weight="bold" fill="#f0f0f0">[15] Model Training Job</text>
+<text x="297.5" y="1029.88" text-anchor="middle" dominant-baseline="middle" font-family="Arial,sans-serif" font-size="12" font-weight="normal" fill="#bbbbbb">GradientBoosting / XGBoost</text>
+<rect x="180" y="1086" width="235" height="70" rx="6" fill="#333333" stroke="#888888" stroke-width="1.5" />
+<text x="297.5" y="1121.0" text-anchor="middle" dominant-baseline="middle" font-family="Arial,sans-serif" font-size="12" font-weight="bold" fill="#f0f0f0">[16] Inference / Scoring Job</text>
+<defs><marker id="m88772" markerWidth="8" markerHeight="6" refX="7.5" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#aaaaaa"/></marker></defs>
+<line x1="167" y1="856" x2="275" y2="886" stroke="#aaaaaa" stroke-width="1.5"  marker-end="url(#m88772)"/>
+<defs><marker id="m33236" markerWidth="8" markerHeight="6" refX="7.5" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#aaaaaa"/></marker></defs>
+<line x1="447" y1="856" x2="375" y2="886" stroke="#aaaaaa" stroke-width="1.5"  marker-end="url(#m33236)"/>
+<defs><marker id="m91644" markerWidth="8" markerHeight="6" refX="7.5" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#aaaaaa"/></marker></defs>
+<line x1="325" y1="956" x2="297" y2="986" stroke="#aaaaaa" stroke-width="1.5"  marker-end="url(#m91644)"/>
+<defs><marker id="m95206" markerWidth="8" markerHeight="6" refX="7.5" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#aaaaaa"/></marker></defs>
+<line x1="297" y1="1056" x2="297" y2="1086" stroke="#aaaaaa" stroke-width="1.5"  marker-end="url(#m95206)"/>
+<rect x="250.0" y="1062.0" width="94" height="16" rx="3" fill="#1e1e1e" opacity="0.85"/>
+<text x="297.0" y="1071.0" text-anchor="middle" dominant-baseline="middle" font-family="Arial,sans-serif" font-size="10" fill="#bbbbbb">trained model</text>
+<defs><marker id="m28830" markerWidth="8" markerHeight="6" refX="7.5" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#aaaaaa"/></marker></defs>
+<path d="M157,710 C162.0,710 162.0,786 167,786" stroke="#aaaaaa" stroke-width="1.5" fill="none"  marker-end="url(#m28830)"/>
+<defs><marker id="m46856" markerWidth="8" markerHeight="6" refX="7.5" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#aaaaaa"/></marker></defs>
+<path d="M690,710 C568.5,710 568.5,786 447,786" stroke="#aaaaaa" stroke-width="1.5" fill="none"  marker-end="url(#m46856)"/>
+<rect x="720" y="876" width="255" height="296" rx="10" fill="#2a2a2a" stroke="#666666" stroke-width="1.5"/>
+<text x="847.5" y="894" text-anchor="middle" font-family="Arial,sans-serif" font-size="12" font-weight="bold" fill="#f0f0f0">Amazon ECR</text>
+<text x="847.5" y="910" text-anchor="middle" font-family="Arial,sans-serif" font-size="12" font-weight="bold" fill="#f0f0f0">Container Images</text>
+<text x="847.5" y="926" text-anchor="middle" font-family="Arial,sans-serif" font-size="12" font-weight="bold" fill="#f0f0f0">(AWS Clean Rooms repo)</text>
+<rect x="732" y="986" width="215" height="70" rx="6" fill="#333333" stroke="#888888" stroke-width="1.5" />
+<text x="839.5" y="1012.12" text-anchor="middle" dominant-baseline="middle" font-family="Arial,sans-serif" font-size="12" font-weight="bold" fill="#f0f0f0">[17] Training Container</text>
+<text x="839.5" y="1029.88" text-anchor="middle" dominant-baseline="middle" font-family="Arial,sans-serif" font-size="12" font-weight="normal" fill="#bbbbbb">GradientBoosting + sklearn</text>
+<rect x="732" y="1086" width="215" height="70" rx="6" fill="#333333" stroke="#888888" stroke-width="1.5" />
+<text x="839.5" y="1112.12" text-anchor="middle" dominant-baseline="middle" font-family="Arial,sans-serif" font-size="12" font-weight="bold" fill="#f0f0f0">[18] Inference Container</text>
+<text x="839.5" y="1129.8799999999999" text-anchor="middle" dominant-baseline="middle" font-family="Arial,sans-serif" font-size="12" font-weight="normal" fill="#bbbbbb">SageMaker PyTorch base</text>
+<defs><marker id="m84714" markerWidth="8" markerHeight="6" refX="7.5" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#aaaaaa"/></marker></defs>
+<path d="M732,1021 C573.5,1021 573.5,1021 415,1021" stroke="#aaaaaa" stroke-width="1.5" fill="none" stroke-dasharray="6 4" marker-end="url(#m84714)"/>
+<rect x="538.5" y="1012.0" width="70" height="16" rx="3" fill="#1e1e1e" opacity="0.9"/>
+<text x="573.5" y="1021.0" text-anchor="middle" dominant-baseline="middle" font-family="Arial,sans-serif" font-size="10" fill="#bbbbbb">pulled by</text>
+<defs><marker id="m74757" markerWidth="8" markerHeight="6" refX="7.5" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#aaaaaa"/></marker></defs>
+<path d="M732,1121 C573.5,1121 573.5,1121 415,1121" stroke="#aaaaaa" stroke-width="1.5" fill="none" stroke-dasharray="6 4" marker-end="url(#m74757)"/>
+<rect x="538.5" y="1112.0" width="70" height="16" rx="3" fill="#1e1e1e" opacity="0.9"/>
+<text x="573.5" y="1121.0" text-anchor="middle" dominant-baseline="middle" font-family="Arial,sans-serif" font-size="10" fill="#bbbbbb">pulled by</text>
+<rect x="137" y="1202" width="320" height="216" rx="10" fill="#2a2a2a" stroke="#666666" stroke-width="1.5"/>
+<text x="297.0" y="1220" text-anchor="middle" font-family="Arial,sans-serif" font-size="12" font-weight="bold" fill="#f0f0f0">Analysis Output  (AWS Clean Rooms repo)</text>
+<rect x="189" y="1232" width="215" height="70" rx="6" fill="#333333" stroke="#888888" stroke-width="1.5" />
+<text x="296.5" y="1258.12" text-anchor="middle" dominant-baseline="middle" font-family="Arial,sans-serif" font-size="12" font-weight="bold" fill="#f0f0f0">[19] Amazon S3</text>
+<text x="296.5" y="1275.8799999999999" text-anchor="middle" dominant-baseline="middle" font-family="Arial,sans-serif" font-size="12" font-weight="normal" fill="#bbbbbb">ADR Propensity Scores</text>
+<rect x="189" y="1332" width="215" height="70" rx="6" fill="#333333" stroke="#888888" stroke-width="1.5" />
+<text x="296.5" y="1358.12" text-anchor="middle" dominant-baseline="middle" font-family="Arial,sans-serif" font-size="12" font-weight="bold" fill="#f0f0f0">[20] Amazon QuickSight Dashboards</text>
+<text x="296.5" y="1375.8799999999999" text-anchor="middle" dominant-baseline="middle" font-family="Arial,sans-serif" font-size="12" font-weight="normal" fill="#bbbbbb">Technical and business metrics</text>
+<defs><marker id="m1006" markerWidth="8" markerHeight="6" refX="7.5" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#aaaaaa"/></marker></defs>
+<line x1="296" y1="1302" x2="296" y2="1332" stroke="#aaaaaa" stroke-width="1.5"  marker-end="url(#m1006)"/>
+<defs><marker id="m87399" markerWidth="8" markerHeight="6" refX="7.5" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#aaaaaa"/></marker></defs>
+<path d="M297,1156 C296.5,1156 296.5,1232 296,1232" stroke="#aaaaaa" stroke-width="1.5" fill="none"  marker-end="url(#m87399)"/>
+</svg>
