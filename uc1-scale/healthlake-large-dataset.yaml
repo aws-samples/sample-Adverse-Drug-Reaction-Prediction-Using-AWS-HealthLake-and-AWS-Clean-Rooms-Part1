@@ -1,0 +1,1356 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Amazon HealthLake large patients dataset
+
+# =============================================================================
+# PARAMETERS
+# =============================================================================
+Parameters:
+
+  RunId:
+    Type: String
+    Description: >
+      Deployment identifier --- AccountId-Date-Time, e.g. 443514573025-20260625-1030.
+      Auto-generate:
+        ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+        RUN_ID="${ACCOUNT}-$(date +%Y%m%d)-$(date +%H%M)"
+      Must differ from any Stack 1 (small) RunId in the same region.
+    AllowedPattern: "^[0-9]{12}-[0-9]{8}-[0-9]{4}$"
+    ConstraintDescription: "AccountId-YYYYMMDD-HHMM"
+
+  PatientCount:
+    Type: Number
+    Default: 500
+    MinValue: 100
+    Description: >
+      Number of Synthea patients to generate.
+      500 for quick testing (~15 min CFN + ~2h pipeline).
+      50000 recommended for ML-significant results (~15 min CFN + ~6-8h pipeline).
+      500000 supported but requires extended pipeline monitoring (~20h+).
+
+  LambdaAssetsBucket:
+    Type: String
+    Description: S3 bucket containing pre-packaged Lambda zips.
+
+  LambdaAssetsPrefix:
+    Type: String
+    Default: ""
+    Description: Optional S3 key prefix (include trailing slash if non-empty).
+
+# =============================================================================
+# RESOURCES
+# =============================================================================
+Resources:
+
+  # ---------------------------------------------------------------------------
+  # IAM --- HealthLake data access role (FHIR import)
+  # ---------------------------------------------------------------------------
+  HealthLakeDataAccessRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "healthlake-large-hl-access-role-${RunId}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: {Service: healthlake.amazonaws.com}
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                "aws:SourceAccount": !Ref AWS::AccountId
+      Policies:
+        - PolicyName: HealthLakeImportAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: S3ReadFhirInput
+                Effect: Allow
+                Action: [s3:GetObject, s3:ListBucket, s3:GetBucketLocation]
+                Resource:
+                  - !Sub "arn:aws:s3:::healthlake-large-fhir-${RunId}"
+                  - !Sub "arn:aws:s3:::healthlake-large-fhir-${RunId}/*"
+                Condition: {Bool: {"aws:SecureTransport": "true"}}
+              - Sid: S3WriteImportOutput
+                Effect: Allow
+                Action: [s3:PutObject, s3:GetBucketLocation]
+                Resource: !Sub "arn:aws:s3:::healthlake-large-fhir-${RunId}/*"
+                Condition: {Bool: {"aws:SecureTransport": "true"}}
+              # NOTE: kms:GenerateDataKey*, kms:Decrypt, kms:DescribeKey require Resource: "*"
+              # here because HealthLake uses the AWS managed key (alias/aws/s3) whose
+              # underlying key ID is account-specific and not known at CFN deploy time.
+              # Ref: https://docs.aws.amazon.com/kms/latest/developerguide/key-policy-services.html
+              - Sid: KmsImportOutput
+                Effect: Allow
+                Action: [kms:GenerateDataKey*, kms:Decrypt, kms:DescribeKey]
+                Resource: "*"
+
+  # ---------------------------------------------------------------------------
+  # IAM --- CodeBuild role
+  # ---------------------------------------------------------------------------
+  CodeBuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "healthlake-large-codebuild-role-${RunId}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: {Service: codebuild.amazonaws.com}
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CodeBuildSyntheaPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: S3WriteFhirData
+                Effect: Allow
+                Action: [s3:PutObject, s3:GetBucketLocation, s3:ListBucket]
+                Resource:
+                  - !Sub "arn:aws:s3:::healthlake-large-fhir-${RunId}"
+                  - !Sub "arn:aws:s3:::healthlake-large-fhir-${RunId}/*"
+              - Sid: CloudWatchLogs
+                Effect: Allow
+                Action: [logs:CreateLogGroup, logs:CreateLogStream, logs:PutLogEvents]
+                Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/healthlake-large-synthea-${RunId}*"
+
+  # ---------------------------------------------------------------------------
+  # IAM --- Lambda execution role (bucket emptier, hmac key manager, pipeline Lambdas)
+  # ---------------------------------------------------------------------------
+  CustomResourceLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "healthlake-large-lambda-role-${RunId}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: {Service: lambda.amazonaws.com}
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: HealthLakeLargeCustomResourcePolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # --- Lake Formation (CustomResourceLambdaRole) ---
+              # NOTE: lakeformation:PutDataLakeSettings, GetDataLakeSettings do not support
+              # resource-level restrictions. Resource: "*" is required.
+              # Ref: https://docs.aws.amazon.com/service-authorization/latest/reference/list_awslakeformation.html
+              - Sid: LakeFormationAdmin
+                Effect: Allow
+                Action: [lakeformation:PutDataLakeSettings, lakeformation:GetDataLakeSettings]
+                Resource: "*"
+              # NOTE: lakeformation:GrantPermissions, RevokePermissions, ListPermissions,
+              # GetDataAccess, RegisterResource, DeregisterResource do not support
+              # resource-level restrictions. Resource: "*" is required. Actual access scope
+              # is enforced by Lake Formation's own permission model.
+              # Ref: https://docs.aws.amazon.com/service-authorization/latest/reference/list_awslakeformation.html
+              - Sid: LakeFormationGrants
+                Effect: Allow
+                Action: [lakeformation:GrantPermissions, lakeformation:RevokePermissions,
+                         lakeformation:ListPermissions, lakeformation:GetDataAccess,
+                         lakeformation:RegisterResource, lakeformation:DeregisterResource]
+                Resource: "*"
+              - Sid: GlueReadWrite
+                Effect: Allow
+                Action: [glue:GetDatabase, glue:GetDatabases, glue:GetTable, glue:GetTables,
+                         glue:GetPartitions, glue:CreateTable, glue:DeleteTable, glue:UpdateTable]
+                Resource:
+                  - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:catalog"
+                  - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:database/healthlake_large_*"
+                  - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:table/healthlake_large_*"
+              # NOTE: glue:GetDatabase/GetTable on the HealthLake cross-account resource link
+              # requires Resource: "*" because the HealthLake service account catalog ID is
+              # discovered at runtime and cannot be statically scoped at CFN deploy time.
+              # Ref: https://docs.aws.amazon.com/glue/latest/dg/glue-specifying-resource-arns.html
+              - Sid: GlueForeignCatalog
+                Effect: Allow
+                Action: [glue:GetDatabase, glue:GetTable, glue:GetTables, glue:GetPartitions]
+                Resource: "*"
+              - Sid: S3HealthLakeData
+                Effect: Allow
+                Action: [s3:GetObject, s3:GetBucketLocation, s3:ListBucket]
+                Resource:
+                  - "arn:aws:s3:::*-009160067849-group"
+                  - "arn:aws:s3:::*-009160067849-group/*"
+              - Sid: S3OwnBuckets
+                Effect: Allow
+                Action: [s3:GetObject, s3:PutObject, s3:DeleteObject, s3:DeleteObjectVersion,
+                         s3:ListBucket, s3:ListBucketVersions, s3:GetBucketLocation]
+                Resource:
+                  - !Sub "arn:aws:s3:::healthlake-large-athena-${RunId}"
+                  - !Sub "arn:aws:s3:::healthlake-large-athena-${RunId}/*"
+                  - !Sub "arn:aws:s3:::healthlake-large-features-${RunId}"
+                  - !Sub "arn:aws:s3:::healthlake-large-features-${RunId}/*"
+                  - !Sub "arn:aws:s3:::healthlake-large-fhir-${RunId}"
+                  - !Sub "arn:aws:s3:::healthlake-large-fhir-${RunId}/*"
+                  # Access logs bucket must also be emptied on stack deletion
+                  - !Sub "arn:aws:s3:::healthlake-large-logs-${RunId}"
+                  - !Sub "arn:aws:s3:::healthlake-large-logs-${RunId}/*"
+              - Sid: AthenaQuery
+                Effect: Allow
+                Action: [athena:StartQueryExecution, athena:GetQueryExecution,
+                         athena:GetQueryResults, athena:StopQueryExecution]
+                Resource: !Sub "arn:aws:athena:${AWS::Region}:${AWS::AccountId}:workgroup/healthlake-large-${RunId}"
+              - Sid: SsmParams
+                Effect: Allow
+                Action: [ssm:PutParameter, ssm:GetParameter, ssm:DeleteParameter]
+                Resource:
+                  - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/healthlake-cleanrooms/*"
+              - Sid: HealthLakeDescribe
+                Effect: Allow
+                Action: [healthlake:DescribeFHIRDatastore]
+                Resource: !Sub "arn:aws:healthlake:${AWS::Region}:${AWS::AccountId}:datastore/fhir/*"
+              - Sid: EventBridgeWaiterRule
+                Effect: Allow
+                Action: [events:EnableRule, events:DisableRule]
+                Resource: !Sub "arn:aws:events:${AWS::Region}:${AWS::AccountId}:rule/healthlake-large-hl-waiter-rule-${RunId}"
+              - Sid: StepFunctionsStart
+                Effect: Allow
+                Action: [states:StartExecution, states:StopExecution, states:ListExecutions]
+                Resource: !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:healthlake-large-import-${RunId}"
+              - Sid: SecretsManagerHmacKey
+                Effect: Allow
+                Action: [secretsmanager:GetSecretValue, secretsmanager:DescribeSecret,
+                         secretsmanager:CreateSecret, secretsmanager:TagResource]
+                Resource: !Sub "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:healthlake-cleanrooms-pprl-hmac-key*"
+
+  # ---------------------------------------------------------------------------
+  # IAM --- SM1 execution role (import: CodeBuild + HealthLake + trigger SM2)
+  # ---------------------------------------------------------------------------
+  ImportExecutionRole:
+    Type: AWS::IAM::Role
+    DependsOn: HealthLakeDataAccessRole
+    Properties:
+      RoleName: !Sub "healthlake-large-sfn-import-role-${RunId}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: {Service: !Sub "states.${AWS::Region}.amazonaws.com"}
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: ImportExecutionPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: CodeBuild
+                Effect: Allow
+                Action: [codebuild:StartBuild, codebuild:BatchGetBuilds, codebuild:StopBuild]
+                Resource: !Sub "arn:aws:codebuild:${AWS::Region}:${AWS::AccountId}:project/healthlake-large-synthea-${RunId}"
+              - Sid: HealthLake
+                Effect: Allow
+                Action: [healthlake:DescribeFHIRDatastore, healthlake:StartFHIRImportJob,
+                         healthlake:DescribeFHIRImportJob]
+                Resource: !Sub "arn:aws:healthlake:${AWS::Region}:${AWS::AccountId}:datastore/fhir/*"
+              - Sid: IamPassRole
+                Effect: Allow
+                Action: iam:PassRole
+                Resource: !GetAtt HealthLakeDataAccessRole.Arn
+              - Sid: StartProcessingStateMachine
+                Effect: Allow
+                Action: states:StartExecution
+                Resource: !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:healthlake-large-processing-${RunId}"
+              - Sid: EventBridgeManagedRules
+                Effect: Allow
+                Action: [events:PutRule, events:PutTargets, events:DescribeRule,
+                         events:DeleteRule, events:RemoveTargets]
+                Resource:
+                  - !Sub "arn:aws:events:${AWS::Region}:${AWS::AccountId}:rule/StepFunctionsGetEventsForCodeBuildStartBuildRule"
+                  - !Sub "arn:aws:events:${AWS::Region}:${AWS::AccountId}:rule/StepFunctions*"
+              # NOTE: X-Ray actions do not support resource-level restrictions in IAM.
+              # Resource: "*" is required.
+              # Ref: https://docs.aws.amazon.com/service-authorization/latest/reference/list_awsxray.html
+              - Sid: XRay
+                Effect: Allow
+                Action: [xray:PutTraceSegments, xray:PutTelemetryRecords, xray:GetSamplingRules,
+                         xray:GetSamplingTargets]
+                Resource: "*"
+              # NOTE: Step Functions log delivery actions (CreateLogDelivery, etc.) require
+              # Resource: "*" per AWS documentation — no resource-level restrictions supported.
+              # Ref: https://docs.aws.amazon.com/step-functions/latest/dg/cw-logs.html
+              - Sid: Logs
+                Effect: Allow
+                Action: [logs:CreateLogDelivery, logs:GetLogDelivery, logs:UpdateLogDelivery,
+                         logs:DeleteLogDelivery, logs:ListLogDeliveries, logs:PutLogEvents,
+                         logs:PutResourcePolicy, logs:DescribeResourcePolicies, logs:DescribeLogGroups]
+                Resource: "*"
+              # NOTE: KMS key ARN for FHIR import job output is account-specific and
+              # not known at CFN deploy time. Resource: "*" scoped to this role only.
+              # Ref: https://docs.aws.amazon.com/kms/latest/developerguide/key-policy-services.html
+              - Sid: KmsForImport
+                Effect: Allow
+                Action: [kms:GenerateDataKey*, kms:Decrypt, kms:DescribeKey]
+                Resource: "*"
+
+  # ---------------------------------------------------------------------------
+  # IAM --- SM2 execution role (processing: Lambda + Athena + SSM)
+  # ---------------------------------------------------------------------------
+  PipelineExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "healthlake-large-sfn-role-${RunId}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: {Service: !Sub "states.${AWS::Region}.amazonaws.com"}
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: PipelineExecutionPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: LambdaInvoke
+                Effect: Allow
+                Action: [lambda:InvokeFunction]
+                Resource:
+                  - !GetAtt Uc1SfDiscoverRlLambda.Arn
+                  - !GetAtt Uc1SfLfGrantLambda.Arn
+                  - !GetAtt Uc1SfCheckPatientReadyLambda.Arn
+                  - !GetAtt Uc1SfSubmitHmacQueryLambda.Arn
+                  - !GetAtt Uc1SfComputeHmacLambda.Arn
+                  - !GetAtt Uc1SfCtasPrepLambda.Arn
+                  - !GetAtt Uc1SfCtasGrantsLambda.Arn
+              - Sid: AthenaNativePolling
+                Effect: Allow
+                Action: [athena:GetQueryExecution]
+                Resource: !Sub "arn:aws:athena:${AWS::Region}:${AWS::AccountId}:workgroup/healthlake-large-${RunId}"
+              - Sid: SsmPut
+                Effect: Allow
+                Action: [ssm:PutParameter]
+                Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/healthlake-cleanrooms/*"
+              # NOTE: Step Functions log delivery actions require Resource: "*".
+              # Ref: https://docs.aws.amazon.com/step-functions/latest/dg/cw-logs.html
+              - Sid: Logs
+                Effect: Allow
+                Action: [logs:CreateLogDelivery, logs:GetLogDelivery, logs:UpdateLogDelivery,
+                         logs:DeleteLogDelivery, logs:ListLogDeliveries, logs:PutLogEvents,
+                         logs:PutResourcePolicy, logs:DescribeResourcePolicies, logs:DescribeLogGroups]
+                Resource: "*"
+              # NOTE: X-Ray actions do not support resource-level restrictions.
+              # Ref: https://docs.aws.amazon.com/service-authorization/latest/reference/list_awsxray.html
+              - Sid: XRay
+                Effect: Allow
+                Action: [xray:PutTraceSegments, xray:PutTelemetryRecords, xray:GetSamplingRules,
+                         xray:GetSamplingTargets]
+                Resource: "*"
+
+  # ---------------------------------------------------------------------------
+  # SHARED HMAC KEY MANAGER
+  # ---------------------------------------------------------------------------
+  HmacKeyManagerLambda:
+    Type: AWS::Lambda::Function
+    DependsOn: CustomResourceLambdaRole
+    Properties:
+      FunctionName: !Sub "healthlake-large-hmac-key-mgr-${RunId}"
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt CustomResourceLambdaRole.Arn
+      Timeout: 60
+      Code:
+        S3Bucket: !Ref LambdaAssetsBucket
+        S3Key: !Sub "${LambdaAssetsPrefix}uc1_hmac_key_manager.zip"
+      Environment:
+        Variables:
+          RUN_ID: !Ref RunId
+
+  HmacKeyManagerCustomResource:
+    Type: AWS::CloudFormation::CustomResource
+    DependsOn: HmacKeyManagerLambda
+    Properties:
+      ServiceToken: !GetAtt HmacKeyManagerLambda.Arn
+      RunId: !Ref RunId
+
+  # ---------------------------------------------------------------------------
+  # UTILITY --- Bucket Emptier
+  # ---------------------------------------------------------------------------
+  BucketEmptierLambda:
+    Type: AWS::Lambda::Function
+    DependsOn: CustomResourceLambdaRole
+    Properties:
+      FunctionName: !Sub "healthlake-large-bucket-emptier-${RunId}"
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt CustomResourceLambdaRole.Arn
+      Timeout: 300
+      Code:
+        S3Bucket: !Ref LambdaAssetsBucket
+        S3Key: !Sub "${LambdaAssetsPrefix}uc1_bucket_emptier.zip"
+
+  # ---------------------------------------------------------------------------
+  # S3 BUCKETS
+  # ---------------------------------------------------------------------------
+
+  # Dedicated S3 access logging bucket — receives server access logs from all
+  # other S3 buckets in this stack. Not logged itself (no circular reference).
+  # Lifecycle policy expires logs after 90 days to control storage cost.
+  AccessLogsBucket:
+    Type: AWS::S3::Bucket
+    Metadata:
+      checkov:
+        skip:
+          - id: "CKV_AWS_18"
+            comment: >
+              This IS the S3 server access logging destination for all other buckets in
+              this stack. Self-referential logging is not supported by AWS S3 — the
+              logging target bucket must differ from the source bucket.
+              Ref: https://docs.aws.amazon.com/AmazonS3/latest/userguide/ServerLogs.html
+          - id: "S3_BUCKET_LOGGING_ENABLED"
+            comment: "Same as CKV_AWS_18 — this bucket IS the logging destination."
+          - id: "S3_BUCKET_SSL_REQUESTS_ONLY"
+            comment: >
+              DenyHTTP is enforced by AccessLogsBucketPolicy (Sid: DenyHTTP). The
+              scanner may fail to resolve the association because the bucket ARN
+              contains the runtime parameter !Sub '...-${RunId}'. The policy is
+              correct and present — this is a scanner false positive.
+    Properties:
+      BucketName: !Sub "healthlake-large-logs-${RunId}"
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: {SSEAlgorithm: AES256}
+      PublicAccessBlockConfiguration: {BlockPublicAcls: true, BlockPublicPolicy: true,
+                                        IgnorePublicAcls: true, RestrictPublicBuckets: true}
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireLogs
+            Status: Enabled
+            ExpirationInDays: 90
+
+  AccessLogsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref AccessLogsBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyHTTP
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource: [!Sub "arn:aws:s3:::healthlake-large-logs-${RunId}",
+                       !Sub "arn:aws:s3:::healthlake-large-logs-${RunId}/*"]
+            Condition: {Bool: {"aws:SecureTransport": "false"}}
+          - Sid: S3ServerAccessLogsPolicy
+            Effect: Allow
+            Principal: {Service: logging.s3.amazonaws.com}
+            Action: s3:PutObject
+            Resource: !Sub "arn:aws:s3:::healthlake-large-logs-${RunId}/*"
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+
+  AccessLogsBucketEmptier:
+    Type: AWS::CloudFormation::CustomResource
+    DependsOn: AccessLogsBucket
+    Properties:
+      ServiceToken: !GetAtt BucketEmptierLambda.Arn
+      BucketName: !Ref AccessLogsBucket
+
+  FhirDataBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "healthlake-large-fhir-${RunId}"
+      VersioningConfiguration: {Status: Enabled}
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: {SSEAlgorithm: AES256}
+      PublicAccessBlockConfiguration: {BlockPublicAcls: true, BlockPublicPolicy: true,
+                                        IgnorePublicAcls: true, RestrictPublicBuckets: true}
+      LoggingConfiguration:
+        DestinationBucketName: !Ref AccessLogsBucket
+        LogFilePrefix: "fhir/"
+
+  FhirDataBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref FhirDataBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyHTTP
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource: [!Sub "arn:aws:s3:::healthlake-large-fhir-${RunId}",
+                       !Sub "arn:aws:s3:::healthlake-large-fhir-${RunId}/*"]
+            Condition: {Bool: {"aws:SecureTransport": "false"}}
+
+  FhirDataBucketEmptier:
+    Type: AWS::CloudFormation::CustomResource
+    DependsOn: FhirDataBucket
+    Properties:
+      ServiceToken: !GetAtt BucketEmptierLambda.Arn
+      BucketName: !Ref FhirDataBucket
+
+  AthenaResultsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "healthlake-large-athena-${RunId}"
+      VersioningConfiguration: {Status: Enabled}
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: {SSEAlgorithm: AES256}
+      PublicAccessBlockConfiguration: {BlockPublicAcls: true, BlockPublicPolicy: true,
+                                        IgnorePublicAcls: true, RestrictPublicBuckets: true}
+      LoggingConfiguration:
+        DestinationBucketName: !Ref AccessLogsBucket
+        LogFilePrefix: "athena/"
+
+  AthenaResultsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref AthenaResultsBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyHTTP
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource: [!Sub "arn:aws:s3:::healthlake-large-athena-${RunId}",
+                       !Sub "arn:aws:s3:::healthlake-large-athena-${RunId}/*"]
+            Condition: {Bool: {"aws:SecureTransport": "false"}}
+
+  AthenaResultsBucketEmptier:
+    Type: AWS::CloudFormation::CustomResource
+    DependsOn: AthenaResultsBucket
+    Properties:
+      ServiceToken: !GetAtt BucketEmptierLambda.Arn
+      BucketName: !Ref AthenaResultsBucket
+
+  FeatureBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "healthlake-large-features-${RunId}"
+      VersioningConfiguration: {Status: Enabled}
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: {SSEAlgorithm: AES256}
+      PublicAccessBlockConfiguration: {BlockPublicAcls: true, BlockPublicPolicy: true,
+                                        IgnorePublicAcls: true, RestrictPublicBuckets: true}
+      LoggingConfiguration:
+        DestinationBucketName: !Ref AccessLogsBucket
+        LogFilePrefix: "features/"
+
+  FeatureBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref FeatureBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyHTTP
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource: [!Sub "arn:aws:s3:::healthlake-large-features-${RunId}",
+                       !Sub "arn:aws:s3:::healthlake-large-features-${RunId}/*"]
+            Condition: {Bool: {"aws:SecureTransport": "false"}}
+
+  FeatureBucketEmptier:
+    Type: AWS::CloudFormation::CustomResource
+    DependsOn: FeatureBucket
+    Properties:
+      ServiceToken: !GetAtt BucketEmptierLambda.Arn
+      BucketName: !Ref FeatureBucket
+
+  # ---------------------------------------------------------------------------
+  # CODEBUILD --- Synthea patient generation (triggered by Step Functions)
+  # ---------------------------------------------------------------------------
+  SyntheaGeneratorProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub "healthlake-large-synthea-${RunId}"
+      ServiceRole: !GetAtt CodeBuildRole.Arn
+      Artifacts: {Type: NO_ARTIFACTS}
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_2XLARGE
+        Image: aws/codebuild/standard:7.0
+        EnvironmentVariables:
+          - {Name: PATIENT_COUNT,    Value: !Sub "${PatientCount}", Type: PLAINTEXT}
+          - {Name: FHIR_DATA_BUCKET, Value: !Ref FhirDataBucket,   Type: PLAINTEXT}
+      Source:
+        Type: NO_SOURCE
+        BuildSpec: |
+          version: 0.2
+          phases:
+            install:
+              runtime-versions:
+                java: corretto17
+              commands:
+                - wget -q https://github.com/synthetichealth/synthea/releases/latest/download/synthea-with-dependencies.jar -O synthea.jar
+            build:
+              commands:
+                - |
+                  if aws s3 ls s3://$FHIR_DATA_BUCKET/synthea-fhir/Patient.ndjson > /dev/null 2>&1; then
+                    echo "FHIR data already in S3 -- skipping Synthea generation."
+                  else
+                    echo "Generating $PATIENT_COUNT patients (FHIR R4 NDJSON)..."
+                    java -Xmx4g -jar synthea.jar -p $PATIENT_COUNT \
+                        --exporter.fhir.bulk_data=true \
+                        --exporter.baseDirectory=./synthea-output
+                    aws s3 cp synthea-output/fhir/ s3://$FHIR_DATA_BUCKET/synthea-fhir/ --recursive --only-show-errors
+                    rm -rf synthea-output
+                    echo "Done."
+                  fi
+      TimeoutInMinutes: 180
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED
+          GroupName: !Sub "/aws/codebuild/healthlake-large-synthea-${RunId}"
+
+  # ---------------------------------------------------------------------------
+  # LAKE FORMATION --- admin registration
+  # ---------------------------------------------------------------------------
+  Uc1LFAdminSettings:
+    Type: AWS::LakeFormation::DataLakeSettings
+    DependsOn: CustomResourceLambdaRole
+    Properties:
+      Admins:
+        - DataLakePrincipalIdentifier: !GetAtt CustomResourceLambdaRole.Arn
+      MutationType: APPEND
+      CreateDatabaseDefaultPermissions:
+        - Principal: {DataLakePrincipalIdentifier: IAM_ALLOWED_PRINCIPALS}
+          Permissions: [ALL]
+      CreateTableDefaultPermissions:
+        - Principal: {DataLakePrincipalIdentifier: IAM_ALLOWED_PRINCIPALS}
+          Permissions: [ALL]
+
+  # ---------------------------------------------------------------------------
+  # HEALTHLAKE FHIR DATA STORE (empty --- data loaded by Step Functions pipeline)
+  # ---------------------------------------------------------------------------
+  HealthLakeDataStore:
+    Type: AWS::HealthLake::FHIRDatastore
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Retain
+    DependsOn: [Uc1LFAdminSettings, FhirDataBucket]
+    Properties:
+      DatastoreName: !Sub "healthlake-large-datastore-${RunId}"
+      DatastoreTypeVersion: R4
+      SseConfiguration:
+        KmsEncryptionConfig: {CmkType: AWS_OWNED_KMS_KEY}
+      IdentityProviderConfiguration:
+        AuthorizationStrategy: AWS_AUTH
+
+  SsmHealthLakeDatastoreId:
+    Type: AWS::SSM::Parameter
+    DependsOn: HealthLakeDataStore
+    Properties:
+      Name: /healthlake-cleanrooms/large-patients-set/healthlake-datastore-id
+      Type: String
+      Value: !GetAtt HealthLakeDataStore.DatastoreId
+
+  # ---------------------------------------------------------------------------
+  # HEALTHLAKE ACTIVE WAITER (async initiator/poller)
+  # Uses EventBridge + two Lambdas to wait for HealthLake ACTIVE status without
+  # any Lambda timeout risk. The initiator stores the CFN callback token in SSM
+  # and enables an EventBridge rule. The poller fires every 2 min, polls
+  # DescribeFHIRDatastore, and sends CFN SUCCESS when ACTIVE.
+  # SKIP_RESOURCE_LINK=true: large stack does not need resource link discovery
+  # here -- SM2 handles that via the DiscoverResourceLink step.
+  # ---------------------------------------------------------------------------
+  Uc1HlWaiterInitiatorLambda:
+    Type: AWS::Lambda::Function
+    DependsOn: CustomResourceLambdaRole
+    Properties:
+      FunctionName: !Sub "healthlake-large-hl-waiter-init-${RunId}"
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt CustomResourceLambdaRole.Arn
+      Timeout: 60
+      Code:
+        S3Bucket: !Ref LambdaAssetsBucket
+        S3Key: !Sub "${LambdaAssetsPrefix}uc1_hl_waiter_initiator.zip"
+      Environment:
+        Variables:
+          RUN_ID: !Ref RunId
+
+  Uc1HlWaiterPollerLambda:
+    Type: AWS::Lambda::Function
+    DependsOn: CustomResourceLambdaRole
+    Properties:
+      FunctionName: !Sub "healthlake-large-hl-waiter-poll-${RunId}"
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt CustomResourceLambdaRole.Arn
+      Timeout: 60
+      Code:
+        S3Bucket: !Ref LambdaAssetsBucket
+        S3Key: !Sub "${LambdaAssetsPrefix}uc1_hl_waiter_poller.zip"
+      Environment:
+        Variables:
+          RUN_ID: !Ref RunId
+          SKIP_RESOURCE_LINK: "true"
+
+  Uc1HlWaiterPollerRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "healthlake-large-hl-waiter-rule-${RunId}"
+      ScheduleExpression: rate(2 minutes)
+      State: DISABLED
+      Targets:
+        - Id: Uc1HlWaiterPollerTarget
+          Arn: !GetAtt Uc1HlWaiterPollerLambda.Arn
+
+  Uc1HlWaiterPollerPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt Uc1HlWaiterPollerLambda.Arn
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt Uc1HlWaiterPollerRule.Arn
+
+  Uc1HlWaiterCustomResource:
+    Type: AWS::CloudFormation::CustomResource
+    DependsOn:
+      - HealthLakeDataStore
+      - Uc1HlWaiterPollerPermission
+    Properties:
+      ServiceToken: !GetAtt Uc1HlWaiterInitiatorLambda.Arn
+      DatastoreId: !GetAtt HealthLakeDataStore.DatastoreId
+      PollerRuleName: !Sub "healthlake-large-hl-waiter-rule-${RunId}"
+      AccountId: !Ref AWS::AccountId
+      Region: !Ref AWS::Region
+
+  # ---------------------------------------------------------------------------
+  # ATHENA WORKGROUP + GLUE DATABASE + LF GRANTS
+  # ---------------------------------------------------------------------------
+  AthenaWorkGroup:
+    Type: AWS::Athena::WorkGroup
+    DeletionPolicy: Delete
+    Properties:
+      Name: !Sub "healthlake-large-${RunId}"
+      State: ENABLED
+      RecursiveDeleteOption: true
+      WorkGroupConfiguration:
+        EngineVersion: {SelectedEngineVersion: AUTO}
+        ResultConfiguration:
+          OutputLocation: !Sub "s3://healthlake-large-athena-${RunId}/results/"
+          EncryptionConfiguration: {EncryptionOption: SSE_S3}
+        EnforceWorkGroupConfiguration: false
+        PublishCloudWatchMetricsEnabled: false
+
+  GlueDatabase:
+    Type: AWS::Glue::Database
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseInput:
+        Name: !Join ["_", !Split ["-", !Sub "healthlake_large_${RunId}"]]
+        Description: UC1 large-dataset HealthLake-derived ADR feature table
+
+  # ---------------------------------------------------------------------------  # ---------------------------------------------------------------------------
+  # PIPELINE TASK LAMBDAS (called by Step Functions)
+  # ---------------------------------------------------------------------------
+  Uc1SfDiscoverRlLambda:
+    Type: AWS::Lambda::Function
+    DependsOn: CustomResourceLambdaRole
+    Properties:
+      FunctionName: !Sub "healthlake-large-sf-discover-rl-${RunId}"
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt CustomResourceLambdaRole.Arn
+      Timeout: 60
+      Code:
+        S3Bucket: !Ref LambdaAssetsBucket
+        S3Key: !Sub "${LambdaAssetsPrefix}uc1_sf_discover_rl.zip"
+
+  Uc1SfLfGrantLambda:
+    Type: AWS::Lambda::Function
+    DependsOn: CustomResourceLambdaRole
+    Properties:
+      FunctionName: !Sub "healthlake-large-sf-lf-grant-${RunId}"
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt CustomResourceLambdaRole.Arn
+      Timeout: 60
+      Code:
+        S3Bucket: !Ref LambdaAssetsBucket
+        S3Key: !Sub "${LambdaAssetsPrefix}uc1_sf_lf_grant.zip"
+
+
+  Uc1SfCheckPatientReadyLambda:
+    Type: AWS::Lambda::Function
+    DependsOn: CustomResourceLambdaRole
+    Properties:
+      FunctionName: !Sub "healthlake-large-sf-patient-check-${RunId}"
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt CustomResourceLambdaRole.Arn
+      Timeout: 120
+      Code:
+        S3Bucket: !Ref LambdaAssetsBucket
+        S3Key: !Sub "${LambdaAssetsPrefix}uc1_sf_check_patient_ready.zip"
+
+  Uc1SfSubmitHmacQueryLambda:
+    Type: AWS::Lambda::Function
+    DependsOn: CustomResourceLambdaRole
+    Properties:
+      FunctionName: !Sub "healthlake-large-sf-submit-hmac-query-${RunId}"
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt CustomResourceLambdaRole.Arn
+      Timeout: 60
+      Code:
+        S3Bucket: !Ref LambdaAssetsBucket
+        S3Key: !Sub "${LambdaAssetsPrefix}uc1_sf_submit_hmac_query.zip"
+
+  Uc1SfComputeHmacLambda:
+    Type: AWS::Lambda::Function
+    DependsOn: CustomResourceLambdaRole
+    Properties:
+      FunctionName: !Sub "healthlake-large-sf-compute-hmac-${RunId}"
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt CustomResourceLambdaRole.Arn
+      Timeout: 900
+      MemorySize: 1024
+      Code:
+        S3Bucket: !Ref LambdaAssetsBucket
+        S3Key: !Sub "${LambdaAssetsPrefix}uc1_sf_compute_hmac.zip"
+
+  Uc1SfCtasPrepLambda:
+    Type: AWS::Lambda::Function
+    DependsOn: CustomResourceLambdaRole
+    Properties:
+      FunctionName: !Sub "healthlake-large-sf-ctas-prep-${RunId}"
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt CustomResourceLambdaRole.Arn
+      Timeout: 300
+      MemorySize: 256
+      Code:
+        S3Bucket: !Ref LambdaAssetsBucket
+        S3Key: !Sub "${LambdaAssetsPrefix}uc1_sf_ctas_prep.zip"
+
+  Uc1SfCtasGrantsLambda:
+    Type: AWS::Lambda::Function
+    DependsOn: CustomResourceLambdaRole
+    Properties:
+      FunctionName: !Sub "healthlake-large-sf-ctas-grants-${RunId}"
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt CustomResourceLambdaRole.Arn
+      Timeout: 60
+      Code:
+        S3Bucket: !Ref LambdaAssetsBucket
+        S3Key: !Sub "${LambdaAssetsPrefix}uc1_sf_ctas_grants.zip"
+
+  # Step Functions pipeline starter CFN custom resource Lambda
+  PipelineStarterLambda:
+    Type: AWS::Lambda::Function
+    DependsOn: CustomResourceLambdaRole
+    Properties:
+      FunctionName: !Sub "healthlake-large-pipeline-starter-${RunId}"
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt CustomResourceLambdaRole.Arn
+      Timeout: 60
+      Code:
+        S3Bucket: !Ref LambdaAssetsBucket
+        S3Key: !Sub "${LambdaAssetsPrefix}uc1_sf_pipeline_starter.zip"
+      Environment:
+        Variables:
+          STATE_MACHINE_ARN: !Ref DataImportStateMachine
+          RUN_ID: !Ref RunId
+
+  # ---------------------------------------------------------------------------
+  # SM1 --- IMPORT STATE MACHINE (HealthLake check + CodeBuild + FHIR import)
+  # Triggers SM2 (DataProcessingStateMachine) when import completes.
+  # If SM2 fails, re-start DataProcessingStateMachine directly -- no re-import needed.
+  # ---------------------------------------------------------------------------
+  DataImportStateMachine:
+    Type: AWS::StepFunctions::StateMachine
+    DependsOn:
+      - ImportExecutionRole
+      - SyntheaGeneratorProject
+      - Uc1HlWaiterCustomResource
+      - DataProcessingStateMachine
+    Properties:
+      StateMachineName: !Sub "healthlake-large-import-${RunId}"
+      StateMachineType: STANDARD
+      RoleArn: !GetAtt ImportExecutionRole.Arn
+      DefinitionSubstitutions:
+        ProcessingStateMachineArn: !GetAtt DataProcessingStateMachine.Arn
+      Definition:
+        Comment: "UC1 large-dataset import pipeline: HealthLake check + CodeBuild + FHIR import + trigger SM2"
+        StartAt: CheckHealthLakeStatus
+        States:
+
+          CheckHealthLakeStatus:
+            Type: Task
+            Resource: "arn:aws:states:::aws-sdk:healthlake:describeFHIRDatastore"
+            Parameters:
+              DatastoreId.$: "$.DatastoreId"
+            ResultSelector:
+              Status.$: "$.DatastoreProperties.DatastoreStatus"
+            ResultPath: "$.HealthLake"
+            Next: IsHealthLakeActive
+
+          IsHealthLakeActive:
+            Type: Choice
+            Choices:
+              - Variable: "$.HealthLake.Status"
+                StringEquals: "ACTIVE"
+                Next: RunCodeBuild
+            Default: WaitForHealthLake
+
+          WaitForHealthLake:
+            Type: Wait
+            Seconds: 120
+            Next: CheckHealthLakeStatus
+
+          RunCodeBuild:
+            Type: Task
+            Resource: "arn:aws:states:::codebuild:startBuild.sync"
+            Parameters:
+              ProjectName.$: "$.CodeBuildProject"
+              EnvironmentVariablesOverride:
+                - Name: PATIENT_COUNT
+                  Value.$: "$.PatientCount"
+                  Type: PLAINTEXT
+                - Name: FHIR_DATA_BUCKET
+                  Value.$: "$.FhirDataBucket"
+                  Type: PLAINTEXT
+            ResultPath: "$.CodeBuildResult"
+            Next: StartFhirImport
+
+          StartFhirImport:
+            Type: Task
+            Resource: "arn:aws:states:::aws-sdk:healthlake:startFHIRImportJob"
+            Parameters:
+              DatastoreId.$: "$.DatastoreId"
+              JobName.$: "States.Format('uc1-scale-import-{}', $.RunId)"
+              InputDataConfig:
+                S3Uri.$: "States.Format('s3://{}/synthea-fhir/', $.FhirDataBucket)"
+              JobOutputDataConfig:
+                S3Configuration:
+                  S3Uri.$: "States.Format('s3://{}/import-output/', $.FhirDataBucket)"
+                  KmsKeyId.$: "States.Format('arn:aws:kms:{}:{}:alias/aws/s3', $.Region, $.AccountId)"
+              DataAccessRoleArn.$: "$.FhirDataAccessRoleArn"
+            ResultSelector:
+              JobId.$: "$.JobId"
+            ResultPath: "$.FhirImport"
+            Next: WaitForFhirImport
+
+          WaitForFhirImport:
+            Type: Wait
+            Seconds: 300
+            Next: CheckFhirImport
+
+          CheckFhirImport:
+            Type: Task
+            Resource: "arn:aws:states:::aws-sdk:healthlake:describeFHIRImportJob"
+            Parameters:
+              DatastoreId.$: "$.DatastoreId"
+              JobId.$: "$.FhirImport.JobId"
+            ResultSelector:
+              Status.$: "$.ImportJobProperties.JobStatus"
+              ResourcesImported.$: "$.ImportJobProperties.JobProgressReport.TotalNumberOfResourcesImported"
+            ResultPath: "$.FhirImportStatus"
+            Next: FhirImportChoice
+
+          FhirImportChoice:
+            Type: Choice
+            Choices:
+              - Variable: "$.FhirImportStatus.Status"
+                StringMatches: "COMPLETED*"
+                Next: StartProcessingPipeline
+              - Variable: "$.FhirImportStatus.Status"
+                StringEquals: "FAILED"
+                Next: ImportFailed
+              - Variable: "$.FhirImportStatus.Status"
+                StringMatches: "CANCEL*"
+                Next: ImportFailed
+            Default: WaitForFhirImport
+
+          StartProcessingPipeline:
+            Type: Task
+            Resource: "arn:aws:states:::states:startExecution"
+            Parameters:
+              StateMachineArn: "${ProcessingStateMachineArn}"
+              Input.$: "$"
+            ResultPath: "$.Discarded"
+            Next: ImportSucceeded
+
+          ImportSucceeded:
+            Type: Succeed
+
+          ImportFailed:
+            Type: Fail
+            Cause: "FHIR import job failed or was cancelled. Check HealthLake console for details."
+
+  # ---------------------------------------------------------------------------
+  # SM2 --- PROCESSING STATE MACHINE (resource link + LF grants + HMAC + CTAS + SSM)
+  # Re-runnable independently: if SM2 fails, start it again directly
+  # via Step Functions console or CLI -- no CodeBuild or FHIR re-import needed.
+  # Input: same JSON payload as SM1 execution input.
+  # ---------------------------------------------------------------------------
+  DataProcessingStateMachine:
+    Type: AWS::StepFunctions::StateMachine
+    DependsOn:
+      - PipelineExecutionRole
+      - Uc1SfDiscoverRlLambda
+      - Uc1SfLfGrantLambda
+      - Uc1SfCheckPatientReadyLambda
+      - Uc1SfSubmitHmacQueryLambda
+      - Uc1SfComputeHmacLambda
+      - Uc1SfCtasPrepLambda
+      - Uc1SfCtasGrantsLambda
+    Properties:
+      StateMachineName: !Sub "healthlake-large-processing-${RunId}"
+      StateMachineType: STANDARD
+      RoleArn: !GetAtt PipelineExecutionRole.Arn
+      DefinitionSubstitutions:
+        DiscoverRlLambdaArn:        !GetAtt Uc1SfDiscoverRlLambda.Arn
+        LfGrantLambdaArn:           !GetAtt Uc1SfLfGrantLambda.Arn
+        CheckPatientReadyLambdaArn: !GetAtt Uc1SfCheckPatientReadyLambda.Arn
+        SubmitHmacQueryLambdaArn:   !GetAtt Uc1SfSubmitHmacQueryLambda.Arn
+        ComputeHmacLambdaArn:       !GetAtt Uc1SfComputeHmacLambda.Arn
+        CtasPrepLambdaArn:          !GetAtt Uc1SfCtasPrepLambda.Arn
+        CtasGrantsLambdaArn:        !GetAtt Uc1SfCtasGrantsLambda.Arn
+      Definition:
+        Comment: "UC1 large-dataset processing: resource link + LF grants + HMAC + CTAS + SSM"
+        StartAt: WaitForResourceLink
+        States:
+
+          WaitForResourceLink:
+            Type: Wait
+            Seconds: 120
+            Next: DiscoverResourceLink
+
+          DiscoverResourceLink:
+            Type: Task
+            Resource: "arn:aws:states:::lambda:invoke"
+            Parameters:
+              FunctionName: "${DiscoverRlLambdaArn}"
+              Payload.$: "$"
+            ResultSelector:
+              Found.$: "$.Payload.Found"
+              HlResourceLinkDbName.$: "$.Payload.HlResourceLinkDbName"
+              HlServiceCatalogId.$: "$.Payload.HlServiceCatalogId"
+            ResultPath: "$.ResourceLink"
+            Next: ResourceLinkFound
+
+          ResourceLinkFound:
+            Type: Choice
+            Choices:
+              - Variable: "$.ResourceLink.Found"
+                BooleanEquals: true
+                Next: GrantLFPermissions
+            Default: WaitForResourceLink
+
+          GrantLFPermissions:
+            Type: Task
+            Resource: "arn:aws:states:::lambda:invoke"
+            Parameters:
+              FunctionName: "${LfGrantLambdaArn}"
+              Payload:
+                AccountId.$: "$.AccountId"
+                Region.$: "$.Region"
+                LambdaRoleArn.$: "$.LambdaRoleArn"
+                ResourceLink.$: "$.ResourceLink"
+                FeatureGlueDb.$: "$.FeatureGlueDb"
+            ResultPath: "$.Discarded"
+            Next: CheckPatientTableReady
+
+          CheckPatientTableReady:
+            Type: Task
+            Resource: "arn:aws:states:::lambda:invoke"
+            Parameters:
+              FunctionName: "${CheckPatientReadyLambdaArn}"
+              Payload.$: "$"
+            ResultSelector:
+              Ready.$: "$.Payload.Ready"
+            ResultPath: "$.PatientCheck"
+            Next: IsPatientTableReady
+
+          IsPatientTableReady:
+            Type: Choice
+            Choices:
+              - Variable: "$.PatientCheck.Ready"
+                BooleanEquals: true
+                Next: SubmitHmacQuery
+            Default: WaitForPatientData
+
+          WaitForPatientData:
+            Type: Wait
+            Seconds: 300
+            Next: CheckPatientTableReady
+
+          SubmitHmacQuery:
+            Type: Task
+            Resource: "arn:aws:states:::lambda:invoke"
+            Parameters:
+              FunctionName: "${SubmitHmacQueryLambdaArn}"
+              Payload.$: "$"
+            ResultSelector:
+              QueryExecutionId.$: "$.Payload.QueryExecutionId"
+            ResultPath: "$.HmacQuery"
+            Next: WaitForHmacQuery
+
+          WaitForHmacQuery:
+            Type: Wait
+            Seconds: 120
+            Next: CheckHmacQueryStatus
+
+          CheckHmacQueryStatus:
+            Type: Task
+            Resource: "arn:aws:states:::aws-sdk:athena:getQueryExecution"
+            Parameters:
+              QueryExecutionId.$: "$.HmacQuery.QueryExecutionId"
+            ResultSelector:
+              State.$: "$.QueryExecution.Status.State"
+            ResultPath: "$.HmacQueryStatus"
+            Next: IsHmacQueryDone
+
+          IsHmacQueryDone:
+            Type: Choice
+            Choices:
+              - Variable: "$.HmacQueryStatus.State"
+                StringEquals: "SUCCEEDED"
+                Next: ComputeHmacTokens
+              - Variable: "$.HmacQueryStatus.State"
+                StringEquals: "FAILED"
+                Next: ProcessingFailed
+              - Variable: "$.HmacQueryStatus.State"
+                StringEquals: "CANCELLED"
+                Next: ProcessingFailed
+            Default: WaitForHmacQuery
+
+          ComputeHmacTokens:
+            Type: Task
+            Resource: "arn:aws:states:::lambda:invoke"
+            TimeoutSeconds: 900
+            Parameters:
+              FunctionName: "${ComputeHmacLambdaArn}"
+              Payload:
+                HmacQuery.$: "$.HmacQuery"
+                FeatureOutputBucket.$: "$.FeatureOutputBucket"
+                FeatureGlueDb.$: "$.FeatureGlueDb"
+                HmacKeySecretArn.$: "$.HmacKeySecretArn"
+                AccountId.$: "$.AccountId"
+            ResultSelector:
+              PatientCount.$: "$.Payload.PatientCount"
+            ResultPath: "$.HmacResult"
+            Next: CtasPrep
+
+          CtasPrep:
+            Type: Task
+            Resource: "arn:aws:states:::lambda:invoke"
+            Parameters:
+              FunctionName: "${CtasPrepLambdaArn}"
+              Payload.$: "$"
+            ResultSelector:
+              QueryExecutionId.$: "$.Payload.QueryExecutionId"
+              FeatureGlueDb.$: "$.Payload.FeatureGlueDb"
+              FeatureBucket.$: "$.Payload.FeatureBucket"
+            ResultPath: "$.CtasPrep"
+            Next: WaitForCtas
+
+          WaitForCtas:
+            Type: Wait
+            Seconds: 120
+            Next: CheckCtasStatus
+
+          CheckCtasStatus:
+            Type: Task
+            Resource: "arn:aws:states:::aws-sdk:athena:getQueryExecution"
+            Parameters:
+              QueryExecutionId.$: "$.CtasPrep.QueryExecutionId"
+            ResultSelector:
+              State.$: "$.QueryExecution.Status.State"
+            ResultPath: "$.CtasStatus"
+            Next: IsCtasDone
+
+          IsCtasDone:
+            Type: Choice
+            Choices:
+              - Variable: "$.CtasStatus.State"
+                StringEquals: "SUCCEEDED"
+                Next: CtasGrants
+              - Variable: "$.CtasStatus.State"
+                StringEquals: "FAILED"
+                Next: ProcessingFailed
+              - Variable: "$.CtasStatus.State"
+                StringEquals: "CANCELLED"
+                Next: ProcessingFailed
+            Default: WaitForCtas
+
+          CtasGrants:
+            Type: Task
+            Resource: "arn:aws:states:::lambda:invoke"
+            Parameters:
+              FunctionName: "${CtasGrantsLambdaArn}"
+              Payload:
+                CtasPrep.$: "$.CtasPrep"
+            ResultPath: "$.Discarded"
+            Next: WriteSSMGlueDatabase
+
+          WriteSSMGlueDatabase:
+            Type: Task
+            Resource: "arn:aws:states:::aws-sdk:ssm:putParameter"
+            Parameters:
+              Name: "/healthlake-cleanrooms/large-patients-set/glue-database"
+              Value.$: "$.FeatureGlueDb"
+              Type: String
+              Overwrite: true
+            ResultPath: "$.Discarded"
+            Next: WriteSSMGlueTable
+
+          WriteSSMGlueTable:
+            Type: Task
+            Resource: "arn:aws:states:::aws-sdk:ssm:putParameter"
+            Parameters:
+              Name: "/healthlake-cleanrooms/large-patients-set/glue-table"
+              Value: "healthcare_features"
+              Type: String
+              Overwrite: true
+            ResultPath: "$.Discarded"
+            Next: WriteSSMFeatureBucket
+
+          WriteSSMFeatureBucket:
+            Type: Task
+            Resource: "arn:aws:states:::aws-sdk:ssm:putParameter"
+            Parameters:
+              Name: "/healthlake-cleanrooms/large-patients-set/feature-s3-bucket"
+              Value.$: "$.FeatureOutputBucket"
+              Type: String
+              Overwrite: true
+            ResultPath: "$.Discarded"
+            Next: WriteSSMRunId
+
+          WriteSSMRunId:
+            Type: Task
+            Resource: "arn:aws:states:::aws-sdk:ssm:putParameter"
+            Parameters:
+              Name: "/healthlake-cleanrooms/large-patients-set/run-id"
+              Value.$: "$.RunId"
+              Type: String
+              Overwrite: true
+            ResultPath: "$.Discarded"
+            Next: WriteSSMPatientCount
+
+          WriteSSMPatientCount:
+            Type: Task
+            Resource: "arn:aws:states:::aws-sdk:ssm:putParameter"
+            Parameters:
+              Name: "/healthlake-cleanrooms/large-patients-set/patient-count"
+              Value.$: "$.PatientCount"
+              Type: String
+              Overwrite: true
+            ResultPath: "$.Discarded"
+            Next: ProcessingSucceeded
+
+          ProcessingSucceeded:
+            Type: Succeed
+
+          ProcessingFailed:
+            Type: Fail
+            Cause: "Processing pipeline failed. Re-start DataProcessingStateMachine directly -- no re-import needed."
+
+  # ---------------------------------------------------------------------------
+  # PIPELINE STARTER --- CFN custom resource that starts Step Functions
+  # Returns CFN SUCCESS immediately. Pipeline runs in background.
+  # CFN stack is CREATE_COMPLETE in ~15 min; pipeline finishes hours later.
+  # ---------------------------------------------------------------------------
+  PipelineStarterCustomResource:
+    Type: AWS::CloudFormation::CustomResource
+    DependsOn:
+      - DataImportStateMachine
+      - HmacKeyManagerCustomResource
+      - GlueDatabase
+      - AthenaWorkGroup
+      - Uc1HlWaiterCustomResource
+      - AthenaResultsBucket
+      - FeatureBucket
+      - FhirDataBucket
+    Properties:
+      ServiceToken: !GetAtt PipelineStarterLambda.Arn
+      # All values below are passed as Step Functions execution input
+      RunId: !Ref RunId
+      AccountId: !Ref AWS::AccountId
+      Region: !Ref AWS::Region
+      DatastoreId: !GetAtt HealthLakeDataStore.DatastoreId
+      CodeBuildProject: !Ref SyntheaGeneratorProject
+      FhirDataBucket: !Sub "healthlake-large-fhir-${RunId}"
+      FhirDataAccessRoleArn: !GetAtt HealthLakeDataAccessRole.Arn
+      FeatureOutputBucket: !Sub "healthlake-large-features-${RunId}"
+      FeatureGlueDb: !Join ["_", !Split ["-", !Sub "healthlake_large_${RunId}"]]
+      AthenaWorkGroup: !Sub "healthlake-large-${RunId}"
+      AthenaResultsBucket: !Sub "healthlake-large-athena-${RunId}"
+      HmacKeySecretArn: !GetAtt HmacKeyManagerCustomResource.HmacKeySecretArn
+      LambdaRoleArn: !GetAtt CustomResourceLambdaRole.Arn
+      PatientCount: !Sub "${PatientCount}"
+
+  # Verification query --- run after pipeline completes (SSM params will be set)
+  VerificationQuery:
+    Type: AWS::Athena::NamedQuery
+    DependsOn: PipelineStarterCustomResource
+    Properties:
+      Name: !Sub "healthlake-large-verification-${RunId}"
+      Description: >
+        Run AFTER the Step Functions pipeline completes (~2-8h after CFN CREATE_COMPLETE).
+        Non-empty result confirms the full pipeline ran successfully.
+      WorkGroup: !Sub "healthlake-large-${RunId}"
+      Database: !Join ["_", !Split ["-", !Sub "healthlake_large_${RunId}"]]
+      QueryString: !Sub
+        - |
+          SELECT age_group, gender, COUNT(*) AS patient_count,
+              AVG(ed_visit_count) AS avg_ed_visits,
+              SUM(hospitalization_flag) AS total_hospitalizations
+          FROM ${GlueDb}.healthcare_features
+          GROUP BY age_group, gender ORDER BY patient_count DESC;
+        - GlueDb: !Join ["_", !Split ["-", !Sub "healthlake_large_${RunId}"]]
+
+# =============================================================================
+# OUTPUTS
+# =============================================================================
+Outputs:
+
+  HealthLakeDatastoreId:
+    Value: !GetAtt HealthLakeDataStore.DatastoreId
+    Export: {Name: !Sub "${AWS::StackName}-DatastoreId"}
+
+  GlueDatabaseName:
+    Value: !Join ["_", !Split ["-", !Sub "healthlake_large_${RunId}"]]
+    Export: {Name: !Sub "${AWS::StackName}-GlueDatabaseName"}
+
+  FeatureS3Bucket:
+    Value: !Sub "healthlake-large-features-${RunId}"
+    Export: {Name: !Sub "${AWS::StackName}-FeatureS3Bucket"}
+
+  HmacKeySecretArn:
+    Value: !GetAtt HmacKeyManagerCustomResource.HmacKeySecretArn
+    Export: {Name: !Sub "${AWS::StackName}-HmacKeySecretArn"}
+
+  ImportStateMachineArn:
+    Description: SM1 - Monitor for CodeBuild + FHIR import progress (~5-7h)
+    Value: !Ref DataImportStateMachine
+    Export: {Name: !Sub "${AWS::StackName}-ImportStateMachineArn"}
+
+  ProcessingStateMachineArn:
+    Description: SM2 - Monitor for HMAC + CTAS processing (~15-30 min). Re-runnable independently if processing fails.
+    Value: !Ref DataProcessingStateMachine
+    Export: {Name: !Sub "${AWS::StackName}-ProcessingStateMachineArn"}
+
+  SsmPathPrefix:
+    Description: SSM prefix --- UC2 reads from here after pipeline completes
+    Value: /healthlake-cleanrooms/large-patients-set/
+    Export: {Name: !Sub "${AWS::StackName}-SsmPathPrefix"}
+
+  PipelineNote:
+    Description: Important deployment note
+    Value: >
+      CFN stack CREATE_COMPLETE in ~15 min (infrastructure only).
+      The data pipeline (Synthea + FHIR import + HMAC + CTAS) runs in the
+      Step Functions state machine listed in PipelineStateMachineArn.
+      Monitor execution in the Step Functions console. SSM parameters at
+      /healthlake-cleanrooms/large-patients-set/ are written when the pipeline
+      completes. Deploy UC2 only after those SSM params exist.
+
+  RunIdOutput:
+    Value: !Ref RunId
+    Export: {Name: !Sub "${AWS::StackName}-RunId"}
+

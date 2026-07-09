@@ -1,0 +1,835 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Amazon HealthLake small patients dataset
+
+# =============================================================================
+# PARAMETERS
+# =============================================================================
+Parameters:
+
+  RunId:
+    Type: String
+    Description: >
+      Deployment identifier — AccountId-Date-Time format, e.g. 443514573025-20260624-2130.
+      Auto-generate with:
+        ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+        RUN_ID="${ACCOUNT}-$(date +%Y%m%d)-$(date +%H%M)"
+      Used as a suffix for all resource names. Changing this creates a new independent
+      deployment; the old deployment must be deleted separately.
+    AllowedPattern: "^[0-9]{12}-[0-9]{8}-[0-9]{4}$"
+    ConstraintDescription: "Must be AccountId-YYYYMMDD-HHMM, e.g. 443514573025-20260624-2130"
+
+  LambdaAssetsBucket:
+    Type: String
+    Description: >
+      S3 bucket that holds all pre-packaged Lambda zip artifacts.
+      Create once per account/region and reuse across UC1 and UC2 stacks.
+
+  LambdaAssetsPrefix:
+    Type: String
+    Default: ""
+    Description: >
+      Optional S3 key prefix (e.g. "uc1/") under which Lambda zips are stored.
+      Include the trailing slash when non-empty.
+
+# =============================================================================
+# RESOURCES
+# =============================================================================
+Resources:
+
+  # ---------------------------------------------------------------------------
+  # IAM — HealthLake data access role (used by HealthLake service for export)
+  # ---------------------------------------------------------------------------
+  HealthLakeDataAccessRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "healthlake-small-hl-access-role-${RunId}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: {Service: healthlake.amazonaws.com}
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                "aws:SourceAccount": !Ref AWS::AccountId
+      Policies:
+        - PolicyName: HealthLakeS3ExportAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: S3PutExport
+                Effect: Allow
+                Action: [s3:PutObject]
+                Resource: !Sub "arn:aws:s3:::healthlake-small-hl-export-${RunId}/*"
+                Condition:
+                  Bool: {"aws:SecureTransport": "true"}
+              - Sid: S3BucketAccess
+                Effect: Allow
+                Action: [s3:GetBucketLocation, s3:ListBucket]
+                Resource: !Sub "arn:aws:s3:::healthlake-small-hl-export-${RunId}"
+                Condition:
+                  Bool: {"aws:SecureTransport": "true"}
+
+  # ---------------------------------------------------------------------------
+  # IAM — Lambda execution role (all custom resource Lambdas)
+  # ---------------------------------------------------------------------------
+  CustomResourceLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "healthlake-small-lambda-role-${RunId}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: {Service: lambda.amazonaws.com}
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: HealthLakeSmallCustomResourcePolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: HealthLakeDescribe
+                Effect: Allow
+                Action: [healthlake:DescribeFHIRDatastore]
+                Resource: !Sub "arn:aws:healthlake:${AWS::Region}:${AWS::AccountId}:datastore/fhir/*"
+              # --- Lake Formation ---
+              # NOTE: lakeformation:PutDataLakeSettings and lakeformation:GetDataLakeSettings
+              # do not support resource-level restrictions in IAM. Resource: "*" is required.
+              # Ref: https://docs.aws.amazon.com/service-authorization/latest/reference/list_awslakeformation.html
+              - Sid: LakeFormationAdmin
+                Effect: Allow
+                Action: [lakeformation:PutDataLakeSettings, lakeformation:GetDataLakeSettings]
+                Resource: "*"
+              # NOTE: lakeformation:GrantPermissions, RevokePermissions, ListPermissions,
+              # GetDataAccess, RegisterResource, DeregisterResource do not support
+              # resource-level restrictions in IAM. Resource: "*" is required.
+              # Actual access scope is enforced by Lake Formation's own permission model.
+              # Ref: https://docs.aws.amazon.com/service-authorization/latest/reference/list_awslakeformation.html
+              - Sid: LakeFormationGrants
+                Effect: Allow
+                Action: [lakeformation:GrantPermissions, lakeformation:RevokePermissions,
+                         lakeformation:ListPermissions, lakeformation:GetDataAccess,
+                         lakeformation:RegisterResource, lakeformation:DeregisterResource]
+                Resource: "*"
+              # Glue — UC1 feature database/tables
+              - Sid: GlueReadWrite
+                Effect: Allow
+                Action: [glue:GetDatabase, glue:GetDatabases, glue:GetTable, glue:GetTables,
+                         glue:GetPartitions, glue:CreateTable, glue:DeleteTable, glue:UpdateTable]
+                Resource:
+                  - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:catalog"
+                  - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:database/healthlake_small_*"
+                  - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:table/healthlake_small_*"
+              # NOTE: glue:GetDatabase/GetTable on the HealthLake cross-account resource link
+              # database requires Resource: "*" because the HealthLake service account
+              # catalog ID is discovered at runtime by the poller Lambda and cannot be
+              # statically scoped in the CFN template at deploy time.
+              # Ref: https://docs.aws.amazon.com/glue/latest/dg/glue-specifying-resource-arns.html
+              - Sid: GlueForeignCatalog
+                Effect: Allow
+                Action: [glue:GetDatabase, glue:GetTable, glue:GetTables, glue:GetPartitions]
+                Resource: "*"
+              # S3 — HealthLake Iceberg data (HL service account bucket, runtime name)
+              - Sid: S3HealthLakeData
+                Effect: Allow
+                Action: [s3:GetObject, s3:GetBucketLocation, s3:ListBucket]
+                Resource:
+                  - "arn:aws:s3:::*-009160067849-group"
+                  - "arn:aws:s3:::*-009160067849-group/*"
+              # S3 — our own buckets
+              - Sid: S3OwnBuckets
+                Effect: Allow
+                Action: [s3:GetObject, s3:PutObject, s3:DeleteObject, s3:DeleteObjectVersion,
+                         s3:ListBucket, s3:ListBucketVersions, s3:GetBucketLocation]
+                Resource:
+                  - !Sub "arn:aws:s3:::healthlake-small-athena-${RunId}"
+                  - !Sub "arn:aws:s3:::healthlake-small-athena-${RunId}/*"
+                  - !Sub "arn:aws:s3:::healthlake-small-features-${RunId}"
+                  - !Sub "arn:aws:s3:::healthlake-small-features-${RunId}/*"
+                  - !Sub "arn:aws:s3:::healthlake-small-hl-export-${RunId}"
+                  - !Sub "arn:aws:s3:::healthlake-small-hl-export-${RunId}/*"
+                  # Access logs bucket must also be emptied on stack deletion
+                  - !Sub "arn:aws:s3:::healthlake-small-logs-${RunId}"
+                  - !Sub "arn:aws:s3:::healthlake-small-logs-${RunId}/*"
+              # Athena
+              - Sid: AthenaQuery
+                Effect: Allow
+                Action: [athena:StartQueryExecution, athena:GetQueryExecution,
+                         athena:GetQueryResults, athena:StopQueryExecution]
+                Resource: !Sub "arn:aws:athena:${AWS::Region}:${AWS::AccountId}:workgroup/healthlake-small-${RunId}"
+              # SSM — stack outputs + async poller callback state
+              - Sid: SsmParams
+                Effect: Allow
+                Action: [ssm:PutParameter, ssm:GetParameter, ssm:DeleteParameter]
+                Resource:
+                  - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/healthlake-cleanrooms/*"
+              # EventBridge — enable/disable the async poller rules
+              - Sid: EventBridgeRules
+                Effect: Allow
+                Action: [events:EnableRule, events:DisableRule]
+                Resource:
+                  - !Sub "arn:aws:events:${AWS::Region}:${AWS::AccountId}:rule/healthlake-small-hl-waiter-rule-${RunId}"
+                  - !Sub "arn:aws:events:${AWS::Region}:${AWS::AccountId}:rule/healthlake-small-hmac-map-rule-${RunId}"
+              # Secrets Manager — HMAC key (shared, fixed name)
+              - Sid: SecretsManagerHmacKey
+                Effect: Allow
+                Action: [secretsmanager:GetSecretValue, secretsmanager:DescribeSecret,
+                         secretsmanager:CreateSecret, secretsmanager:TagResource]
+                Resource: !Sub "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:healthlake-cleanrooms-pprl-hmac-key*"
+
+  # ---------------------------------------------------------------------------
+  # SHARED HMAC KEY MANAGER
+  # Manages the shared PPRL key. Creates it on first deploy (Stack 1 or Stack 2);
+  # subsequent stacks find the existing secret and reuse it. Never deletes it.
+  # ---------------------------------------------------------------------------
+  HmacKeyManagerLambda:
+    Type: AWS::Lambda::Function
+    DependsOn: CustomResourceLambdaRole
+    Properties:
+      FunctionName: !Sub "healthlake-small-hmac-key-mgr-${RunId}"
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt CustomResourceLambdaRole.Arn
+      Timeout: 60
+      Code:
+        S3Bucket: !Ref LambdaAssetsBucket
+        S3Key: !Sub "${LambdaAssetsPrefix}uc1_hmac_key_manager.zip"
+      Environment:
+        Variables:
+          RUN_ID: !Ref RunId
+
+  HmacKeyManagerCustomResource:
+    Type: AWS::CloudFormation::CustomResource
+    DependsOn: HmacKeyManagerLambda
+    Properties:
+      ServiceToken: !GetAtt HmacKeyManagerLambda.Arn
+      RunId: !Ref RunId
+
+  # ---------------------------------------------------------------------------
+  # UTILITY — Bucket Emptier (empties versioned S3 buckets before CFN deletes them)
+  # ---------------------------------------------------------------------------
+  BucketEmptierLambda:
+    Type: AWS::Lambda::Function
+    DependsOn: CustomResourceLambdaRole
+    Properties:
+      FunctionName: !Sub "healthlake-small-bucket-emptier-${RunId}"
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt CustomResourceLambdaRole.Arn
+      Timeout: 300
+      Code:
+        S3Bucket: !Ref LambdaAssetsBucket
+        S3Key: !Sub "${LambdaAssetsPrefix}uc1_bucket_emptier.zip"
+
+  # ---------------------------------------------------------------------------
+  # S3 BUCKETS
+  # Note: RunId already contains AccountId so no ${AWS::AccountId} in names.
+  # ---------------------------------------------------------------------------
+
+  # Dedicated S3 access logging bucket — receives server access logs from all
+  # other S3 buckets in this stack. Not logged itself (no circular reference).
+  # Lifecycle policy expires logs after 90 days to control storage cost.
+  AccessLogsBucket:
+    Type: AWS::S3::Bucket
+    Metadata:
+      checkov:
+        skip:
+          - id: "CKV_AWS_18"
+            comment: >
+              This IS the S3 server access logging destination for all other buckets in
+              this stack. Self-referential logging is not supported by AWS S3 — the
+              logging target bucket must differ from the source bucket.
+              Ref: https://docs.aws.amazon.com/AmazonS3/latest/userguide/ServerLogs.html
+          - id: "S3_BUCKET_LOGGING_ENABLED"
+            comment: "Same as CKV_AWS_18 — this bucket IS the logging destination."
+          - id: "S3_BUCKET_SSL_REQUESTS_ONLY"
+            comment: >
+              DenyHTTP is enforced by AccessLogsBucketPolicy (Sid: DenyHTTP). The
+              scanner may fail to resolve the association because the bucket ARN
+              contains the runtime parameter !Sub '...-${RunId}'. The policy is
+              correct and present — this is a scanner false positive.
+    Properties:
+      BucketName: !Sub "healthlake-small-logs-${RunId}"
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: {SSEAlgorithm: AES256}
+      PublicAccessBlockConfiguration: {BlockPublicAcls: true, BlockPublicPolicy: true,
+                                        IgnorePublicAcls: true, RestrictPublicBuckets: true}
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireLogs
+            Status: Enabled
+            ExpirationInDays: 90
+
+  AccessLogsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref AccessLogsBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyHTTP
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource: [!Sub "arn:aws:s3:::healthlake-small-logs-${RunId}",
+                       !Sub "arn:aws:s3:::healthlake-small-logs-${RunId}/*"]
+            Condition: {Bool: {"aws:SecureTransport": "false"}}
+          - Sid: S3ServerAccessLogsPolicy
+            Effect: Allow
+            Principal: {Service: logging.s3.amazonaws.com}
+            Action: s3:PutObject
+            Resource: !Sub "arn:aws:s3:::healthlake-small-logs-${RunId}/*"
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+
+  AccessLogsBucketEmptier:
+    Type: AWS::CloudFormation::CustomResource
+    DependsOn: AccessLogsBucket
+    Properties:
+      ServiceToken: !GetAtt BucketEmptierLambda.Arn
+      BucketName: !Ref AccessLogsBucket
+
+  # ---------------------------------------------------------------------------
+  HlExportBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "healthlake-small-hl-export-${RunId}"
+      VersioningConfiguration: {Status: Enabled}
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: {SSEAlgorithm: AES256}
+      PublicAccessBlockConfiguration: {BlockPublicAcls: true, BlockPublicPolicy: true,
+                                        IgnorePublicAcls: true, RestrictPublicBuckets: true}
+      LoggingConfiguration:
+        DestinationBucketName: !Ref AccessLogsBucket
+        LogFilePrefix: "hl-export/"
+
+  HlExportBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref HlExportBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyHTTP
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource: [!Sub "arn:aws:s3:::healthlake-small-hl-export-${RunId}",
+                       !Sub "arn:aws:s3:::healthlake-small-hl-export-${RunId}/*"]
+            Condition: {Bool: {"aws:SecureTransport": "false"}}
+
+  HlExportBucketEmptier:
+    Type: AWS::CloudFormation::CustomResource
+    DependsOn: HlExportBucket
+    Properties:
+      ServiceToken: !GetAtt BucketEmptierLambda.Arn
+      BucketName: !Ref HlExportBucket
+
+  AthenaResultsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "healthlake-small-athena-${RunId}"
+      VersioningConfiguration: {Status: Enabled}
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: {SSEAlgorithm: AES256}
+      PublicAccessBlockConfiguration: {BlockPublicAcls: true, BlockPublicPolicy: true,
+                                        IgnorePublicAcls: true, RestrictPublicBuckets: true}
+      LoggingConfiguration:
+        DestinationBucketName: !Ref AccessLogsBucket
+        LogFilePrefix: "athena/"
+
+  AthenaResultsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref AthenaResultsBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyHTTP
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource: [!Sub "arn:aws:s3:::healthlake-small-athena-${RunId}",
+                       !Sub "arn:aws:s3:::healthlake-small-athena-${RunId}/*"]
+            Condition: {Bool: {"aws:SecureTransport": "false"}}
+
+  AthenaResultsBucketEmptier:
+    Type: AWS::CloudFormation::CustomResource
+    DependsOn: AthenaResultsBucket
+    Properties:
+      ServiceToken: !GetAtt BucketEmptierLambda.Arn
+      BucketName: !Ref AthenaResultsBucket
+
+  FeatureBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "healthlake-small-features-${RunId}"
+      VersioningConfiguration: {Status: Enabled}
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: {SSEAlgorithm: AES256}
+      PublicAccessBlockConfiguration: {BlockPublicAcls: true, BlockPublicPolicy: true,
+                                        IgnorePublicAcls: true, RestrictPublicBuckets: true}
+      LoggingConfiguration:
+        DestinationBucketName: !Ref AccessLogsBucket
+        LogFilePrefix: "features/"
+
+  FeatureBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref FeatureBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyHTTP
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource: [!Sub "arn:aws:s3:::healthlake-small-features-${RunId}",
+                       !Sub "arn:aws:s3:::healthlake-small-features-${RunId}/*"]
+            Condition: {Bool: {"aws:SecureTransport": "false"}}
+
+  FeatureBucketEmptier:
+    Type: AWS::CloudFormation::CustomResource
+    DependsOn: FeatureBucket
+    Properties:
+      ServiceToken: !GetAtt BucketEmptierLambda.Arn
+      BucketName: !Ref FeatureBucket
+
+  # ---------------------------------------------------------------------------
+  # LAKE FORMATION — admin registration (APPEND mode, safe for shared accounts)
+  # WARNING: CreateDatabase/TableDefaultPermissions do NOT support APPEND —
+  # they replace current values. Safe in a dedicated demo account.
+  # ---------------------------------------------------------------------------
+  Uc1LFAdminSettings:
+    Type: AWS::LakeFormation::DataLakeSettings
+    DependsOn: CustomResourceLambdaRole
+    Properties:
+      Admins:
+        - DataLakePrincipalIdentifier: !GetAtt CustomResourceLambdaRole.Arn
+      MutationType: APPEND
+      CreateDatabaseDefaultPermissions:
+        - Principal: {DataLakePrincipalIdentifier: IAM_ALLOWED_PRINCIPALS}
+          Permissions: [ALL]
+      CreateTableDefaultPermissions:
+        - Principal: {DataLakePrincipalIdentifier: IAM_ALLOWED_PRINCIPALS}
+          Permissions: [ALL]
+
+  # ---------------------------------------------------------------------------
+  # HEALTHLAKE FHIR DATA STORE (Synthea preload — ~100 patients)
+  # DeletionPolicy: Delete — stack deletion removes the datastore.
+  # Any change to DatastoreName/TypeVersion/PreloadDataConfig/SseConfiguration
+  # triggers REPLACEMENT (destroys all data). Use DeletionPolicy: Retain if
+  # protecting a production datastore.
+  # ---------------------------------------------------------------------------
+  HealthLakeDataStore:
+    Type: AWS::HealthLake::FHIRDatastore
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Retain
+    DependsOn: [Uc1LFAdminSettings, HlExportBucket]
+    Properties:
+      DatastoreName: !Sub "healthlake-small-datastore-${RunId}"
+      DatastoreTypeVersion: R4
+      PreloadDataConfig:
+        PreloadDataType: SYNTHEA
+      SseConfiguration:
+        KmsEncryptionConfig: {CmkType: AWS_OWNED_KMS_KEY}
+      IdentityProviderConfiguration:
+        AuthorizationStrategy: AWS_AUTH
+
+  # ---------------------------------------------------------------------------
+  # HL ACTIVE WAITER (async initiator/poller)
+  # CFN marks HealthLake CREATE_COMPLETE while still CREATING.
+  # Synthea preload takes 15-30 min — exceeds Lambda 15-min timeout if synchronous.
+  # Pattern: initiator stores CFN token in SSM + enables EventBridge rule;
+  # poller fires every 2 min, sends CFN SUCCESS once ACTIVE.
+  # ---------------------------------------------------------------------------
+  HlWaiterInitiatorLambda:
+    Type: AWS::Lambda::Function
+    DependsOn: CustomResourceLambdaRole
+    Properties:
+      FunctionName: !Sub "healthlake-small-hl-waiter-init-${RunId}"
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt CustomResourceLambdaRole.Arn
+      Timeout: 60
+      Code:
+        S3Bucket: !Ref LambdaAssetsBucket
+        S3Key: !Sub "${LambdaAssetsPrefix}uc1_hl_waiter_initiator.zip"
+      Environment:
+        Variables:
+          RUN_ID: !Ref RunId
+
+  HlWaiterPollerLambda:
+    Type: AWS::Lambda::Function
+    DependsOn: CustomResourceLambdaRole
+    Properties:
+      FunctionName: !Sub "healthlake-small-hl-waiter-poller-${RunId}"
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt CustomResourceLambdaRole.Arn
+      Timeout: 60
+      Code:
+        S3Bucket: !Ref LambdaAssetsBucket
+        S3Key: !Sub "${LambdaAssetsPrefix}uc1_hl_waiter_poller.zip"
+      Environment:
+        Variables:
+          RUN_ID: !Ref RunId
+
+  HlWaiterPollerRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "healthlake-small-hl-waiter-rule-${RunId}"
+      ScheduleExpression: "rate(2 minutes)"
+      State: DISABLED
+      Targets:
+        - Id: HlWaiterPollerTarget
+          Arn: !GetAtt HlWaiterPollerLambda.Arn
+
+  HlWaiterPollerPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt HlWaiterPollerLambda.Arn
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt HlWaiterPollerRule.Arn
+
+  # Outputs: DatastoreId, DatastoreEndpoint, HlResourceLinkDbName, HlServiceCatalogId
+  HlWaiterCustomResource:
+    Type: AWS::CloudFormation::CustomResource
+    DependsOn: [HlWaiterPollerPermission, HealthLakeDataStore]
+    Properties:
+      ServiceToken: !GetAtt HlWaiterInitiatorLambda.Arn
+      DatastoreId: !GetAtt HealthLakeDataStore.DatastoreId
+      PollerRuleName: !Sub "healthlake-small-hl-waiter-rule-${RunId}"
+      Region: !Ref AWS::Region
+      AccountId: !Ref AWS::AccountId
+
+  # ---------------------------------------------------------------------------
+  # LF GRANTS on HealthLake resource link (Lambda custom resource — cannot use
+  # native AWS::LakeFormation::PrincipalPermissions for cross-account links)
+  # ---------------------------------------------------------------------------
+  LfHlGrantLambda:
+    Type: AWS::Lambda::Function
+    DependsOn: CustomResourceLambdaRole
+    Properties:
+      FunctionName: !Sub "healthlake-small-lf-hl-grant-${RunId}"
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt CustomResourceLambdaRole.Arn
+      Timeout: 60
+      Code:
+        S3Bucket: !Ref LambdaAssetsBucket
+        S3Key: !Sub "${LambdaAssetsPrefix}uc1_lf_hl_grant.zip"
+
+  LfHlGrantCustomResource:
+    Type: AWS::CloudFormation::CustomResource
+    DependsOn: [Uc1LFAdminSettings, HlWaiterCustomResource]
+    Properties:
+      ServiceToken: !GetAtt LfHlGrantLambda.Arn
+      AccountId: !Ref AWS::AccountId
+      Region: !Ref AWS::Region
+      LambdaRoleArn: !GetAtt CustomResourceLambdaRole.Arn
+      HlResourceLinkDbName: !GetAtt HlWaiterCustomResource.HlResourceLinkDbName
+      HlServiceCatalogId: !GetAtt HlWaiterCustomResource.HlServiceCatalogId
+
+  # ---------------------------------------------------------------------------
+  # ATHENA WORKGROUP + GLUE DATABASE
+  # Glue DB name uses underscores (Glue does not allow hyphens in DB names).
+  # !Join+!Split converts RunId hyphens to underscores.
+  # ---------------------------------------------------------------------------
+  AthenaWorkGroup:
+    Type: AWS::Athena::WorkGroup
+    DeletionPolicy: Delete
+    Properties:
+      Name: !Sub "healthlake-small-${RunId}"
+      State: ENABLED
+      RecursiveDeleteOption: true
+      WorkGroupConfiguration:
+        EngineVersion: {SelectedEngineVersion: AUTO}
+        ResultConfiguration:
+          OutputLocation: !Sub "s3://healthlake-small-athena-${RunId}/results/"
+          EncryptionConfiguration: {EncryptionOption: SSE_S3}
+        EnforceWorkGroupConfiguration: false
+        PublishCloudWatchMetricsEnabled: false
+
+  GlueDatabase:
+    Type: AWS::Glue::Database
+    DependsOn: Uc1LFAdminSettings
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseInput:
+        Name: !Join ["_", !Split ["-", !Sub "healthlake_small_${RunId}"]]
+        Description: UC1 small-dataset HealthLake-derived ADR feature table for Clean Rooms ML
+
+  # LFFeatureDatabaseGrant REMOVED — CustomResourceLambdaRole is registered as an LF
+  # data lake administrator via Uc1LFAdminSettings. LF admins have implicit full access
+  # to all databases/tables and do not require explicit CREATE_TABLE grants.
+  # Native AWS::LakeFormation::PrincipalPermissions causes DELETE_FAILED on rollback
+  # when the grant was never applied (CTAS did not run).
+
+  # FeatureBucketLFRegistration + FeatureBucketDataLocationGrant REMOVED.
+  # Root cause of CREATE_FAILED: granting DATA_LOCATION_ACCESS via native CFN requires
+  # the calling IAM role (the CFN deployment role) to be an LF data lake administrator.
+  # The deployment role is not in the LF admin list — only CustomResourceLambdaRole is.
+  # Ref: https://docs.aws.amazon.com/lake-formation/latest/dg/granting-location-permissions-local.html
+  # Fix: the feature S3 bucket is intentionally NOT registered with LF. Access is
+  # controlled by IAM alone (CustomResourceLambdaRole has s3:PutObject on the bucket),
+  # which is sufficient for Athena CTAS to write to an unregistered S3 location.
+  # CustomResourceLambdaRole is an LF admin and has full implicit access to registered
+  # paths regardless, so no DATA_LOCATION_ACCESS grant is needed.
+
+  # ---------------------------------------------------------------------------
+  # HMAC PATIENT TOKEN MAPPING (async initiator/poller)
+  # Reads patient demographics from HealthLake Iceberg tables via Athena,
+  # computes HMAC-SHA256 PPRL tokens using the shared key from Secrets Manager,
+  # writes patient_uuid→patient_token CSV to S3, registers as Glue table.
+  # Must complete before the CTAS (CTAS JOINs on this mapping table).
+  # ---------------------------------------------------------------------------
+  HmacMappingInitiatorLambda:
+    Type: AWS::Lambda::Function
+    DependsOn: CustomResourceLambdaRole
+    Properties:
+      FunctionName: !Sub "healthlake-small-hmac-map-init-${RunId}"
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt CustomResourceLambdaRole.Arn
+      Timeout: 60
+      Code:
+        S3Bucket: !Ref LambdaAssetsBucket
+        S3Key: !Sub "${LambdaAssetsPrefix}uc1_hmac_mapping_initiator.zip"
+      Environment:
+        Variables:
+          RUN_ID: !Ref RunId
+          FEATURE_OUTPUT_BUCKET: !Sub "healthlake-small-features-${RunId}"
+          FEATURE_GLUE_DB: !Join ["_", !Split ["-", !Sub "healthlake_small_${RunId}"]]
+
+  HmacMappingPollerLambda:
+    Type: AWS::Lambda::Function
+    DependsOn: CustomResourceLambdaRole
+    Properties:
+      FunctionName: !Sub "healthlake-small-hmac-map-poller-${RunId}"
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt CustomResourceLambdaRole.Arn
+      Timeout: 60
+      MemorySize: 1024
+      Code:
+        S3Bucket: !Ref LambdaAssetsBucket
+        S3Key: !Sub "${LambdaAssetsPrefix}uc1_hmac_mapping_poller.zip"
+      Environment:
+        Variables:
+          RUN_ID: !Ref RunId
+          HMAC_KEY_SECRET_ARN: !GetAtt HmacKeyManagerCustomResource.HmacKeySecretArn
+          HL_RESOURCE_LINK_DB: !GetAtt HlWaiterCustomResource.HlResourceLinkDbName
+          FEATURE_OUTPUT_BUCKET: !Sub "healthlake-small-features-${RunId}"
+          FEATURE_GLUE_DB: !Join ["_", !Split ["-", !Sub "healthlake_small_${RunId}"]]
+          ATHENA_WORKGROUP: !Sub "healthlake-small-${RunId}"
+          ATHENA_RESULTS_BUCKET: !Sub "healthlake-small-athena-${RunId}"
+
+  HmacMappingPollerRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "healthlake-small-hmac-map-rule-${RunId}"
+      ScheduleExpression: "rate(2 minutes)"
+      State: DISABLED
+      Targets:
+        - Id: HmacMappingPollerTarget
+          Arn: !GetAtt HmacMappingPollerLambda.Arn
+
+  HmacMappingPollerPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt HmacMappingPollerLambda.Arn
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt HmacMappingPollerRule.Arn
+
+  HmacMappingCustomResource:
+    Type: AWS::CloudFormation::CustomResource
+    DependsOn:
+      - LfHlGrantCustomResource
+      - AthenaWorkGroup
+      - GlueDatabase
+      - HmacMappingPollerPermission
+      - AthenaResultsBucket
+      - FeatureBucket
+    Properties:
+      ServiceToken: !GetAtt HmacMappingInitiatorLambda.Arn
+      RunId: !Ref RunId
+      PollerRuleName: !Sub "healthlake-small-hmac-map-rule-${RunId}"
+
+  # LFMappingTableGrant REMOVED — CreateTableDefaultPermissions already grants ALL
+  # to IAM_ALLOWED_PRINCIPALS on any new table. Explicit grant causes AlreadyExists
+  # conflicts when a previous failed deployment left the grant in place.
+
+  # ---------------------------------------------------------------------------
+  # ATHENA CTAS FEATURE ENGINEERING
+  # Reads FHIR Iceberg tables via HL resource link, JOINs with HMAC mapping,
+  # writes patient-level feature table to S3 in Parquet format.
+  # ---------------------------------------------------------------------------
+  AthenaCTASLambda:
+    Type: AWS::Lambda::Function
+    DependsOn: CustomResourceLambdaRole
+    Properties:
+      FunctionName: !Sub "healthlake-small-athena-ctas-${RunId}"
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt CustomResourceLambdaRole.Arn
+      Timeout: 600
+      MemorySize: 256
+      Code:
+        S3Bucket: !Ref LambdaAssetsBucket
+        S3Key: !Sub "${LambdaAssetsPrefix}uc1_athena_ctas.zip"
+      Environment:
+        Variables:
+          HL_RESOURCE_LINK_DB: !GetAtt HlWaiterCustomResource.HlResourceLinkDbName
+          FEATURE_OUTPUT_BUCKET: !Sub "healthlake-small-features-${RunId}"
+          FEATURE_GLUE_DB: !Join ["_", !Split ["-", !Sub "healthlake_small_${RunId}"]]
+          ATHENA_WORKGROUP: !Sub "healthlake-small-${RunId}"
+          ATHENA_RESULTS_BUCKET: !Sub "healthlake-small-athena-${RunId}"
+          RUN_ID: !Ref RunId
+
+  AthenaCTASCustomResource:
+    Type: AWS::CloudFormation::CustomResource
+    DependsOn:
+      - LfHlGrantCustomResource
+      - AthenaWorkGroup
+      - GlueDatabase
+      - HmacMappingCustomResource
+      - AthenaResultsBucket
+      - FeatureBucket
+    Properties:
+      ServiceToken: !GetAtt AthenaCTASLambda.Arn
+      RunId: !Ref RunId
+
+  # LFFeatureTableGrant REMOVED — CreateTableDefaultPermissions already grants ALL
+  # to IAM_ALLOWED_PRINCIPALS when Athena CTAS creates the healthcare_features table.
+
+  # Athena saved query for post-deployment verification
+  VerificationQuery:
+    Type: AWS::Athena::NamedQuery
+    DependsOn: AthenaCTASCustomResource
+    Properties:
+      Name: !Sub "healthlake-small-verification-${RunId}"
+      Description: >
+        Verifies UC1 small-dataset deployment. Non-empty result with HMAC tokens
+        confirms the full pipeline (HealthLake → Iceberg → HMAC mapping → Athena CTAS).
+      WorkGroup: !Sub "healthlake-small-${RunId}"
+      Database: !Join ["_", !Split ["-", !Sub "healthlake_small_${RunId}"]]
+      QueryString: !Sub
+        - |
+          -- UC1 Small Dataset — Deployment Verification
+          -- Expected: rows with 64-char hex patient_id (HMAC tokens), non-zero counts
+          SELECT
+              LEFT(patient_id, 8) || '...' AS patient_id_preview,
+              age_group, gender,
+              COUNT(*)                        AS patient_count,
+              AVG(ed_visit_count)             AS avg_ed_visits,
+              SUM(hospitalization_flag)       AS total_hospitalizations,
+              SUM(drug_discontinuation_flag)  AS total_discontinuations,
+              ROUND(AVG(comorbidity_count),1) AS avg_comorbidities
+          FROM ${GlueDb}.healthcare_features
+          GROUP BY LEFT(patient_id,8)||'...', age_group, gender
+          ORDER BY patient_count DESC;
+        - GlueDb: !Join ["_", !Split ["-", !Sub "healthlake_small_${RunId}"]]
+
+  # ---------------------------------------------------------------------------
+  # SSM OUTPUTS — fixed semantic paths (no RunId), readable by UC2 and operators
+  # ---------------------------------------------------------------------------
+  SsmGlueDatabase:
+    Type: AWS::SSM::Parameter
+    DependsOn: GlueDatabase
+    Properties:
+      Name: /healthlake-cleanrooms/small-patients-set/glue-database
+      Type: String
+      Value: !Join ["_", !Split ["-", !Sub "healthlake_small_${RunId}"]]
+
+  SsmGlueTable:
+    Type: AWS::SSM::Parameter
+    DependsOn: AthenaCTASCustomResource
+    Properties:
+      Name: /healthlake-cleanrooms/small-patients-set/glue-table
+      Type: String
+      Value: healthcare_features
+
+  SsmFeatureS3Bucket:
+    Type: AWS::SSM::Parameter
+    DependsOn: FeatureBucket
+    Properties:
+      Name: /healthlake-cleanrooms/small-patients-set/feature-s3-bucket
+      Type: String
+      Value: !Sub "healthlake-small-features-${RunId}"
+
+  SsmHealthLakeDatastoreId:
+    Type: AWS::SSM::Parameter
+    DependsOn: HealthLakeDataStore
+    Properties:
+      Name: /healthlake-cleanrooms/small-patients-set/healthlake-datastore-id
+      Type: String
+      Value: !GetAtt HealthLakeDataStore.DatastoreId
+
+  SsmRunId:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /healthlake-cleanrooms/small-patients-set/run-id
+      Type: String
+      Value: !Ref RunId
+
+# =============================================================================
+# OUTPUTS
+# =============================================================================
+Outputs:
+
+  HealthLakeDatastoreId:
+    Description: HealthLake FHIR datastore ID
+    Value: !GetAtt HealthLakeDataStore.DatastoreId
+    Export: {Name: !Sub "${AWS::StackName}-DatastoreId"}
+
+  HealthLakeDatastoreEndpoint:
+    Description: HealthLake FHIR REST endpoint
+    Value: !GetAtt HlWaiterCustomResource.DatastoreEndpoint
+    Export: {Name: !Sub "${AWS::StackName}-DatastoreEndpoint"}
+
+  GlueDatabaseName:
+    Description: Glue database containing the UC1 feature table
+    Value: !Join ["_", !Split ["-", !Sub "healthlake_small_${RunId}"]]
+    Export: {Name: !Sub "${AWS::StackName}-GlueDatabaseName"}
+
+  GlueTableName:
+    Description: Glue table name for the patient-level ADR feature table
+    Value: healthcare_features
+    Export: {Name: !Sub "${AWS::StackName}-GlueTableName"}
+
+  FeatureS3Bucket:
+    Description: S3 bucket containing the Parquet feature table and HMAC mapping
+    Value: !Sub "healthlake-small-features-${RunId}"
+    Export: {Name: !Sub "${AWS::StackName}-FeatureS3Bucket"}
+
+  AthenaWorkGroupName:
+    Description: Athena workgroup for feature engineering queries
+    Value: !Sub "healthlake-small-${RunId}"
+    Export: {Name: !Sub "${AWS::StackName}-AthenaWorkGroup"}
+
+  HmacKeySecretArn:
+    Description: >
+      ARN of the shared PPRL HMAC key (healthlake-cleanrooms-pprl-hmac-key).
+      Shared with UC1 Stack 2 and UC2. Do NOT delete until all stacks are torn down.
+    Value: !GetAtt HmacKeyManagerCustomResource.HmacKeySecretArn
+    Export: {Name: !Sub "${AWS::StackName}-HmacKeySecretArn"}
+
+  SsmPathPrefix:
+    Description: SSM path prefix for this deployment — UC2 reads parameters here
+    Value: /healthlake-cleanrooms/small-patients-set/
+    Export: {Name: !Sub "${AWS::StackName}-SsmPathPrefix"}
+
+  RunIdOutput:
+    Description: RunId used for this deployment
+    Value: !Ref RunId
+    Export: {Name: !Sub "${AWS::StackName}-RunId"}

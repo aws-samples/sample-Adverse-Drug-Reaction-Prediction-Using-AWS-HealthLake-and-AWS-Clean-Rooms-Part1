@@ -1,0 +1,30 @@
+This AWS sample is provided for demonstration and educational purposes only.
+It is not intended for production use without modification.
+
+AWS makes no representations or warranties about the suitability of this software,
+either express or implied, including but not limited to merchantability, fitness
+for a particular purpose, or non-infringement. AWS will not be liable for any
+damages of any kind arising from the use of this software.
+
+Before deploying in a production environment, you are responsible for:
+
+- Reviewing and hardening all IAM permissions according to the principle of
+  least privilege for your specific environment
+- Enabling and configuring all security controls appropriate for your
+  organization's requirements (encryption, logging, monitoring, alerting)
+- Ensuring compliance with applicable regulations and standards (HIPAA, GDPR,
+  and any other regulations governing health data in your jurisdiction)
+- Replacing synthetic data with appropriately de-identified real-world data,
+  following applicable privacy and de-identification standards
+- Conducting a security review and penetration test before handling any
+  real patient data
+- Ensuring that all AWS services used are covered under your organization's
+  Business Associate Agreement (BAA) with AWS where required by HIPAA
+
+This sample uses machine learning for ADR (Adverse Drug Reaction) propensity
+scoring. Model outputs are probabilistic estimates and must not be used as
+the sole basis for clinical, safety, pharmacovigilance, or regulatory decisions.
+Human review by qualified medical and pharmaceutical professionals is required
+before acting on any model predictions.
+
+> **Important: model outputs**: This sample uses machine learning for ADR propensity scoring. Scores are probabilistic estimates and must not be used as the sole basis for clinical, safety, pharmacovigilance, or regulatory decisions. Human review by qualified medical and pharmaceutical professionals is required before acting on any model predictions.
