@@ -20,8 +20,7 @@
    - 5.4 [What the Custom Resources Do](#54-what-the-custom-resources-do)
 6. [Undeployment Guide](#6-undeployment-guide)
 7. [Security](#7-security)
-8. [Repository Structure](#8-repository-structure)
-9. [License](#9-license)
+8. [License](#8-license)
 
 ---
 
@@ -536,47 +535,6 @@ See [SECURITY.md](SECURITY.md) for the full security disclosure and responsible 
 
 ---
 
-## 8. Repository Structure
-
-```
-.
-├── uc1/
-│   └── healthlake-small-dataset.yaml  # Clinical Data Stack (Small) — HealthLake Synthea preload, ~100 patients, ~35 min
-├── uc1-scale/
-│   └── healthlake-large-dataset.yaml  # Clinical Data Stack (Large) — Step Functions pipeline, 500–50,000 patients
-├── lambda/
-│   │
-│   │  # Small stack Lambdas (CloudFormation custom resources)
-│   ├── uc1_hl_waiter_initiator/   # HealthLake ACTIVE waiter — async initiator
-│   ├── uc1_hl_waiter_poller/      # HealthLake ACTIVE waiter — EventBridge poller
-│   ├── uc1_lf_hl_grant/           # Lake Formation grants on HealthLake resource link
-│   ├── uc1_hmac_mapping_initiator/ # HMAC token mapping — async initiator
-│   ├── uc1_hmac_mapping_poller/   # HMAC token mapping — EventBridge poller
-│   ├── uc1_athena_ctas/           # Athena CTAS feature engineering
-│   │   └── sql/feature_engineering.sql
-│   │
-│   │  # Shared (both stacks)
-│   ├── uc1_bucket_emptier/        # S3 bucket auto-emptier on stack deletion
-│   ├── uc1_hmac_key_manager/      # Shared HMAC key: create-if-not-exists in Secrets Manager
-│   │
-│   │  # Large stack Step Functions task Lambdas
-│   ├── uc1_sf_discover_rl/        # Discover HealthLake Glue resource link database
-│   ├── uc1_sf_lf_grant/           # Lake Formation grants (Step Functions task)
-│   ├── uc1_sf_check_patient_ready/ # Poll until patient Iceberg table has rows
-│   ├── uc1_sf_submit_hmac_query/  # Submit Athena demographics SELECT query
-│   ├── uc1_sf_compute_hmac/       # Paginate results, compute HMAC tokens, upload CSVs
-│   ├── uc1_sf_ctas_prep/          # Drop old table, clean S3, submit CTAS query
-│   │   └── sql/feature_engineering.sql
-│   ├── uc1_sf_ctas_grants/        # Post-CTAS Lake Formation grants
-│   └── uc1_sf_pipeline_starter/   # CFN custom resource: starts Step Functions execution
-├── dist/
-│   ├── package_lambdas.py         # Packages all Lambda zips for upload
-│   └── deploy_stacks.py           # Deploy/delete stacks via boto3 (developer use)
-└── README.md
-```
-
----
-
-## 9. License
+## 8. License
 
 This library is licensed under the MIT-0 License. See the [LICENSE](LICENSE) file.
