@@ -52,7 +52,7 @@ The end-to-end flow:
 
 **1. Standardize and centralize clinical data (Health Insurer)**
 
-The Health Insurer ingests clinical data (EHR records, claims, lab results) into AWS HealthLake, a HIPAA-eligible FHIR (Fast Healthcare Interoperability Resources) R4 data store, which normalizes everything into a common standard using ICD-10-CM, RxNorm, SNOMED CT, and LOINC coding systems. When patient records arrive from multiple source systems under different identifiers, [AWS Entity Resolution](https://aws.amazon.com/entity-resolution/) identifies and links records belonging to the same patient across disparate sources (matching, merging, and normalizing the data into a single unified patient profile) before feature engineering begins.
+The Health Insurer ingests clinical data (EHR records, claims, lab results) into AWS HealthLake, a HIPAA-eligible Fast Healthcare Interoperability Resources (FHIR) R4 data store, which normalizes everything into a common standard using ICD-10-CM, RxNorm, SNOMED CT, and LOINC coding systems. When patient records arrive from multiple source systems under different identifiers, [AWS Entity Resolution](https://aws.amazon.com/entity-resolution/) identifies and links records belonging to the same patient across disparate sources (matching, merging, and normalizing the data into a single unified patient profile) before feature engineering begins.
 
 **2. Engineer features for Machine Learning (Health Insurer)**
 
@@ -60,11 +60,11 @@ AWS HealthLake automatically transforms the ingested FHIR data into Apache Icebe
 
 **3. Run Machine Learning analysis on both parties' collective dataset**
 
-Both parties contribute their datasets to an AWS Clean Rooms private collaboration. The datasets are joined using a shared pseudonymized patient identifier. An ML (Machine Learning) model is trained on the combined dataset signals and scores every patient for ADR risk. All this occurs within the privacy boundary of the AWS Clean Rooms collaboration, where neither party can access the other's underlying records.
+Both parties contribute their datasets to an AWS Clean Rooms private collaboration. The datasets are joined using a shared pseudonymized patient identifier. A Machine Learning (ML) model is trained on the combined dataset signals and scores every patient for ADR risk. All this occurs within the privacy boundary of the AWS Clean Rooms collaboration, where neither party can access the other's underlying records.
 
 **4. Act on the results**
 
-The analysis produces an ADR propensity score for every matched patient, together with the contributing risk features from both datasets: drug exposure signals from the pharma side joined with clinical outcomes from the health insurer side. These results are stored in Amazon S3 and visualized in a set of Amazon QuickSight dashboards providing both technical metrics (score distribution, feature importance, model performance) and business metrics (estimated preventable hospitalizations, high-risk patient segments by drug class, therapy line, and comorbidity profile, and projected business impact of early intervention). The resulting dataset can be used for a range of scenarios; for example the pharma company can use it to prioritize safety signal investigations and support regulatory submissions (REMS: Risk Evaluation and Mitigation Strategy). The Health Insurer can use scores to identify high-risk members for targeted outreach through care management programs. Healthcare providers in the insurer's network can embed scores into clinical decision support systems to flag patients during prescribing workflows.
+The analysis produces an ADR propensity score for every matched patient, together with the contributing risk features from both datasets: drug exposure signals from the pharma side joined with clinical outcomes from the health insurer side. These results are stored in Amazon S3 and visualized in a set of Amazon QuickSight dashboards providing both technical metrics (score distribution, feature importance, model performance) and business metrics (estimated preventable hospitalizations, high-risk patient segments by drug class, therapy line, and comorbidity profile, and projected business impact of early intervention). The resulting dataset can be used for a range of scenarios; for example the pharma company can use it to prioritize safety signal investigations and support regulatory submissions (Risk Evaluation and Mitigation Strategy, REMS). The Health Insurer can use scores to identify high-risk members for targeted outreach through care management programs. Healthcare providers in the insurer's network can embed scores into clinical decision support systems to flag patients during prescribing workflows.
 
 ### Collaboration Models
 
@@ -93,8 +93,8 @@ In this sample, patient matching uses a shared pseudonymized identifier derived 
 
 ## 3. Example Dashboards
 
-Once both this AWS Healthlake AWS Sample and AWS Clean Rooms AWS Sample are deployed, four Amazon QuickSight dashboards are automatically created and accessible from the AWS Clean Rooms stack's CloudFormation Outputs tab.
-
+Once both Cloudformation templates are deployed, the ADR analysis results are presented in four Amazon QuickSight dashboards, providing both business and techincal metrics.
+The first Cloudformation template is provided with this AWS Healthlake AWS-Sample and the second is provided with [AWS Clean Rooms AWS-Sample](https://github.com/aws-samples/sample-Adverse-Drug-Reaction-Prediction-Using-AWS-HealthLake-and-AWS-Clean-Rooms-Part2).
 ---
 
 ### Dashboard 1: Score Distribution
