@@ -94,6 +94,7 @@ In this sample, patient matching uses a shared pseudonymized identifier derived 
 ## 3. Example Dashboards
 
 Once both CloudFormation templates are deployed, the ADR analysis results are presented in four Amazon QuickSight dashboards, providing both business and technical metrics. The first CloudFormation template is provided with this AWS HealthLake AWS Sample and the second is provided with the [AWS Clean Rooms AWS Sample](https://github.com/aws-samples/sample-Adverse-Drug-Reaction-Prediction-Using-AWS-HealthLake-and-AWS-Clean-Rooms-Part2).
+
 ---
 
 ### Dashboard 1: Score Distribution
