@@ -202,17 +202,17 @@ flowchart TB
     KEY["Shared secret key (exchanged once out-of-band via AWS Secrets Manager)"]
 
     subgraph PHARMA["Pharma Company — independent process"]
-        direction LR
+        direction TB
         P1["Patient records"] --> P2["Extract: dob, first_name, last_name, gender"] --> P3["Normalize: UPPERCASE, trim"] --> P4["HMAC-SHA256 with shared secret key"] --> P5["patient_id = 64-char hex token + Drug exposure data"]
     end
 
     subgraph HC["Health Insurer — independent process"]
-        direction LR
+        direction TB
         H1["FHIR Patient resources from AWS HealthLake"] --> H2["Extract: birthDate, name.family, name.given, gender"] --> H3["Normalize: UPPERCASE, trim"] --> H4["HMAC-SHA256 with shared secret key"] --> H5["patient_id = 64-char hex token + Clinical feature data"]
     end
 
     subgraph CR["AWS Clean Rooms — JOIN on patient_id"]
-        direction LR
+        direction TB
         J1["Pharma configured table"]
         J2["Health Insurer configured table"]
         J3["Matched patient records — same demographics produce same HMAC token"]
@@ -241,12 +241,12 @@ flowchart TB
     KEY["Shared C3R collaboration key (exchanged once out-of-band via AWS Secrets Manager)"]
 
     subgraph PHARMA["Pharma Company (with C3R)"]
-        direction LR
+        direction TB
         P1["Patient records + drug exposure data"] --> P2["Define C3R schema:<br/>patient_id = fingerprint<br/>drug data = sealed<br/>non-sensitive = cleartext"] --> P3["Run C3R client locally<br/>(data never leaves org boundary)"] --> P4["Encrypted Parquet:<br/>patient_id = HMAC fingerprint<br/>drug columns = AES-GCM ciphertext"]
     end
 
     subgraph HC["Health Insurer (with C3R)"]
-        direction LR
+        direction TB
         H1["FHIR Patient resources + clinical features"] --> H2["Define C3R schema:<br/>patient_id = fingerprint<br/>clinical data = sealed<br/>non-sensitive = cleartext"] --> H3["Run C3R client locally<br/>(data never leaves org boundary)"] --> H4["Encrypted Parquet:<br/>patient_id = HMAC fingerprint<br/>clinical columns = AES-GCM ciphertext"]
     end
 
