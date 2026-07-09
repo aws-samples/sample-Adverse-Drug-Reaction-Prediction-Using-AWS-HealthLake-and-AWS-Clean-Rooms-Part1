@@ -214,7 +214,7 @@ Once both this AWS Healthlake AWS Sample and AWS Clean Rooms AWS Sample are depl
 
 This section describes what each party does in this AWS sample, from data preparation to analysis results, mapped to the architecture boxes in [section 2](#2-architecture).
 
-This AWS HealthLake repo covers the Health Insurer's clinical data pipeline, covering architecture boxes [1] through [6].iThe pharma company data pipeline and the AWS Clean Rooms collaboration (boxes [7] through [17]) are covered in the [AWS Clean Rooms repo (Part 2 of this repo)](https://github.com/aws-samples/sample-PredictPatientsAdverseDrugReactionsUsingAWSCleanRoomsMLandCloudFormation/).
+This AWS HealthLake repo covers the Health Insurer's clinical data pipeline, covering architecture boxes [1] through [6]. The pharma company data pipeline and the AWS Clean Rooms collaboration (boxes [7] through [17]) are covered in the [AWS Clean Rooms repo (Part 2 of this repo)](https://github.com/aws-samples/sample-Adverse-Drug-Reaction-Prediction-Using-AWS-HealthLake-and-AWS-Clean-Rooms-Part2).
 
 #### Health Insurer
 
@@ -232,13 +232,13 @@ The Health Insurer's goal is to contribute a clean, standardized, patient-level 
 
 **Patient token computation**: Before the feature table is ready for AWS Clean Rooms, each patient's raw UUID from AWS HealthLake is replaced with a privacy-preserving HMAC-SHA256 token computed from their demographic fields. This token is the shared identifier that allows the pharma company's drug exposure data to be joined with the Health Insurer's clinical features inside AWS Clean Rooms, without either party knowing the other's internal patient identifiers. See [section 4.2](#42-patient-matching-across-organizations) for details.
 
-#### Pharma Company: covered in the [AWS Clean Rooms repo](https://github.com/aws-samples/sample-PredictPatientsAdverseDrugReactionsUsingAWSCleanRoomsMLandCloudFormation/)
+#### Pharma Company: covered in the [AWS Clean Rooms repo](https://github.com/aws-samples/sample-Adverse-Drug-Reaction-Prediction-Using-AWS-HealthLake-and-AWS-Clean-Rooms-Part2)
 
 **Box [7]: Synthetic Drug Exposure Data Generation** *(AWS Clean Rooms repo)*: An AWS Lambda function generates synthetic drug exposure records for the same patient population, including drug name, dosage, treatment duration, therapy line, known safety scores, and black-box warning flags.
 
 **Boxes [8] and [9]: Drug Data Storage and Registration** *(AWS Clean Rooms repo)*: The drug exposure CSV is stored in Amazon S3 and registered in AWS Glue Data Catalog, ready to be contributed as a configured table to the AWS Clean Rooms collaboration.
 
-#### Joint Collaboration: covered in the [AWS Clean Rooms repo](https://github.com/aws-samples/sample-PredictPatientsAdverseDrugReactionsUsingAWSCleanRoomsMLandCloudFormation/)
+#### Joint Collaboration: covered in the [AWS Clean Rooms repo](https://github.com/aws-samples/sample-Adverse-Drug-Reaction-Prediction-Using-AWS-HealthLake-and-AWS-Clean-Rooms-Part2)
 
 **Box [10]: Configured Tables and Analysis Rules** *(AWS Clean Rooms repo)*: Both parties' Glue-registered tables are added to an AWS Clean Rooms collaboration as configured tables with analysis rules that restrict what queries can be run. Neither party can query the other's raw data; only the defined collaboration queries are permitted.
 
@@ -336,7 +336,7 @@ flowchart TB
 
 ### 4.3 Technical Perspective
 
-This section describes what each architecture box does at a technical level: what service is used, what it receives as input, and what it produces as output. This covers only the Health Insurer's clinical data pipeline (this AWS HealthLake repo). For the pharma and AWS Clean Rooms components, see the [AWS Clean Rooms repo](https://github.com/aws-samples/sample-PredictPatientsAdverseDrugReactionsUsingAWSCleanRoomsMLandCloudFormation/).
+This section describes what each architecture box does at a technical level: what service is used, what it receives as input, and what it produces as output. This covers only the Health Insurer's clinical data pipeline (this AWS HealthLake repo). For the pharma and AWS Clean Rooms components, see the [AWS Clean Rooms repo](https://github.com/aws-samples/sample-Adverse-Drug-Reaction-Prediction-Using-AWS-HealthLake-and-AWS-Clean-Rooms-Part2).
 
 **[1] Synthetic Clinical Data Generation (Synthea)**
 AWS CodeBuild runs a Java Synthea process that generates FHIR R4 NDJSON (Newline-Delimited JSON) bulk export files. For the large dataset stack, AWS CodeBuild generates up to 50,000 synthetic patients, each with a full clinical history including encounters, conditions, observations, and medication requests. The output NDJSON files are uploaded to Amazon S3.
@@ -529,7 +529,7 @@ Upload all files to the root of the S3 bucket (no subfolder). If you prefer a su
 
 #### Step 5: Next Step
 
-Once Cloudformation template is succesfully deployed, you can proceed deploying the [AWS Clean Rooms repo (Part 2 of this repo)](https://github.com/aws-samples/sample-PredictPatientsAdverseDrugReactionsUsingAWSCleanRoomsMLandCloudFormation/), following its [README deployment instructions](https://github.com/aws-samples/sample-PredictPatientsAdverseDrugReactionsUsingAWSCleanRoomsMLandCloudFormation/blob/main/README.md).
+Once Cloudformation template is succesfully deployed, you can proceed deploying the [AWS Clean Rooms repo (Part 2 of this repo)](https://github.com/aws-samples/sample-Adverse-Drug-Reaction-Prediction-Using-AWS-HealthLake-and-AWS-Clean-Rooms-Part2), following its [README deployment instructions](https://github.com/aws-samples/sample-Adverse-Drug-Reaction-Prediction-Using-AWS-HealthLake-and-AWS-Clean-Rooms-Part2/blob/main/README.md).
 
 ---
 
@@ -573,7 +573,7 @@ If you deployed both the small and large stacks, you can delete them in any orde
 
 ### Step 1: Delete the AWS Clean Rooms stack (if deployed)
 
-Follow the undeployment instructions in the [AWS Clean Rooms repo README](https://github.com/aws-samples/sample-PredictPatientsAdverseDrugReactionsUsingAWSCleanRoomsMLandCloudFormation/blob/main/README.md).
+Follow the undeployment instructions in the [AWS Clean Rooms repo README](https://github.com/aws-samples/sample-Adverse-Drug-Reaction-Prediction-Using-AWS-HealthLake-and-AWS-Clean-Rooms-Part2/blob/main/README.md).
 
 ### Step 2: Delete the AWS Healthlake stact (small/large patients dataset)
 

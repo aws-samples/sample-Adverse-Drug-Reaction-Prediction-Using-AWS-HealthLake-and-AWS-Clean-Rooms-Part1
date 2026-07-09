@@ -6,7 +6,7 @@ either express or implied, including but not limited to merchantability, fitness
 for a particular purpose, or non-infringement. AWS will not be liable for any
 damages of any kind arising from the use of this software.
 
-Before deploying in a production environment, you are responsible for:
+Before deploying in a production environment, you are responsible for verifying and complying with the [AWS Shared Responsibility Model](https://aws.amazon.com/compliance/shared-responsibility-model/) and any applicable policy and regulation, such as:
 
 - Reviewing and hardening all IAM permissions according to the principle of
   least privilege for your specific environment
